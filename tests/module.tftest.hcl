@@ -452,6 +452,42 @@ run "two_envs" {
   }
 }
 
+# single-Region keys work as multi-Region ones do, in any region
+run "single_region_transit_keys" {
+  command = plan
+
+  variables {
+    envs = {
+      dev = {
+        kms_transit_key_arn = "arn:aws:kms:us-east-1:222222222222:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+        registry            = "agents: [{id: dev-use1-blue}]\n"
+      }
+      prod = {
+        kms_transit_key_arn = "arn:aws:kms:us-east-2:333333333333:key/5678abcd-56ab-78cd-90ef-1234567890ab"
+        registry            = "agents: [{id: prod-use1-blue}]\n"
+      }
+    }
+  }
+
+  assert {
+    condition = [for env in jsondecode(aws_ssm_parameter.envs[0].insecure_value).envs : env.kmsTransitKeyId] == [
+      "arn:aws:kms:us-east-1:222222222222:key/1234abcd-12ab-34cd-56ef-1234567890ab",
+      "arn:aws:kms:us-east-2:333333333333:key/5678abcd-56ab-78cd-90ef-1234567890ab",
+    ]
+    error_message = "each env should get its own single-Region transit key"
+  }
+
+  assert {
+    condition = {
+      for s in data.aws_iam_policy_document.this[0].statement : s.sid => s.resources if startswith(s.sid, "TransitKey")
+      } == {
+      TransitKey0 = toset(["arn:aws:kms:us-east-1:222222222222:key/1234abcd-12ab-34cd-56ef-1234567890ab"])
+      TransitKey1 = toset(["arn:aws:kms:us-east-2:333333333333:key/5678abcd-56ab-78cd-90ef-1234567890ab"])
+    }
+    error_message = "the role should use each env's single-Region transit key, in its own region"
+  }
+}
+
 run "existing_table" {
   command = plan
 

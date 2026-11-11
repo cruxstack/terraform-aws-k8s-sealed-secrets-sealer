@@ -109,10 +109,11 @@ Install it on the organization, on the repositories people seal in.
 
 ### Transit Keys
 
-Make each env's transit key a multi-Region key, with a replica in every
-region the control plane may run in, and set `kms_transit_key_arn` to the
-replica in the module's region. A replica can only be made while its
-primary's region is up.
+A transit key may be single-Region or multi-Region, in any region; the
+control plane calls it in the region its ARN names. A multi-Region key with a
+replica in each region the control plane may run in keeps working when one
+region is lost: set `kms_transit_key_arn` to the replica in the module's
+region. A replica can only be made while its primary's region is up.
 
 Each env's transit key policy must allow the `lambda_role_arn` output, on the
 primary key and on every replica. Apply the module first: a key policy cannot
@@ -204,10 +205,13 @@ carry the module's tags. To use a restored table, set the env's
 The control plane can be rebuilt in another region, such as `us-east-2` when
 `us-east-1` is down. Prepare these while both regions are up:
 
-- **Keys:** each env's transit and escrow keys are multi-Region keys with a
-  replica there, whose policies allow the roles that will use them. Clusters
-  rebuilt there get the env's sealing keys only by decrypting escrow with
-  that replica. See [Transit Keys](#transit-keys) and the app's
+- **Keys:** clusters rebuilt there get the env's sealing keys only by
+  decrypting escrow, so each env's escrow key must still be usable: a replica
+  there, or a single-Region key in a region that stays up. A single-Region
+  escrow key in the lost region leaves them without keys until it is back.
+  The transit key can be either, or a new key made during the failover,
+  since what it protects lasts only minutes. See [Transit Keys](#transit-keys)
+  and the app's
   [deployment guide](https://github.com/cruxstack/k8s-sealed-secrets-sealer/blob/main/docs/deployment.md#1-keys-in-each-envs-account).
 - **Tables:** the AWS Backup plan copies them to that region. Copies across
   regions need DynamoDB's advanced backup features turned on.
@@ -220,20 +224,21 @@ Then, in that region:
 1. Restore each env's table from its copy, with a KMS key in that region.
 2. Apply the module with its own label, such as `environment = "use2"`: IAM
    role names are global, and the old deployment's roles still exist. Set
-   each env's `kms_transit_key_arn` to its replica there and
-   `dynamodb_table` to the restored table and its key. Keep `domain_name`,
-   with the new certificate, and leave `route53_zone_id` empty, since the
-   old deployment's record still exists. Point that record at the
-   `api_gateway_domain_target` output.
-3. Allow the new `lambda_role_arn` on each transit key's replica, unless a
+   each env's `kms_transit_key_arn` to a transit key that is up, such as its
+   replica there, and `dynamodb_table` to the restored table and its key.
+   Keep `domain_name`, with the new certificate, and leave `route53_zone_id`
+   empty, since the old deployment's record still exists. Point that record
+   at the `api_gateway_domain_target` output.
+3. Allow the new `lambda_role_arn` on each transit key it uses, unless a
    pattern there already matches it.
 4. Finish each restore as the app's
    [runbook](https://github.com/cruxstack/k8s-sealed-secrets-sealer/blob/main/docs/operations.md#restoring-the-table)
    says: TTL, point-in-time recovery, the backup plan, and the revocations
    made since the backup.
 5. Install the agents in the new clusters, each listed in its env's
-   registry, with `kms.transitKeyId` and `kms.escrowKeyId` set to the
-   replicas there. Each restores the env's keys from escrow.
+   registry, with `kms.transitKeyId` and `kms.escrowKeyId` set to keys that
+   are up, such as the replicas there. Each restores the env's keys from
+   escrow.
 
 With the same domain, the agents' `controlPlane.url` and audience and the
 GitHub App's callback URL stay as they were. Generated session keys and admin
