@@ -17,6 +17,8 @@ account.
   deployment for isolation
 - **A table per env** - TTL, point-in-time recovery, deletion protection, and
   a customer managed KMS key
+- **Disaster recovery** - Global table replicas, and replicas of their key,
+  in other regions
 - **Secrets in SSM** - SecureString parameters, generated when not given, or
   your own parameters by ARN
 - **Least privilege** - The function's role holds only the DynamoDB, KMS,
@@ -165,9 +167,41 @@ parameter to keep it out of Terraform. The admin API is off until
 
 Each env's table holds its escrowed sealing keys and revocations, which
 nothing else can rebuild. Deletion protection and point-in-time recovery are
-on. Add the tables to an AWS Backup plan with copies in another region; they
-carry the module's tags. To use a restored table, set the env's
-`dynamodb_table`.
+on. Add the tables to an AWS Backup plan; they carry the module's tags. To
+use a restored table, set the env's `dynamodb_table`.
+
+### Disaster Recovery
+
+With `dynamodb_config.replica_regions = ["us-east-2"]`, each env table the
+module creates becomes a global table with a replica there, encrypted with a
+replica of the table key. Tables an env brings in `dynamodb_table` are not
+replicated.
+
+A failover also needs each env's transit and escrow keys to be multi-Region
+keys with replicas in the DR region, each with its own key policy statements,
+and agents there to name their region's replicas.
+
+To fail over:
+
+1. Deploy the module in the DR region under a distinct label, such as
+   `environment = "ue2"`: IAM role names are global. Give each env its
+   transit key's DR replica as `kms_transit_key_arn`, and a `dynamodb_table`
+   with its table's `name` (see `dynamodb_tables`) and the DR region's table
+   key (see `dynamodb_replica_kms_key_arns`) as `kms_key_arn`.
+2. Allow that deployment's `lambda_role_arn` on each transit key replica.
+3. Move the domain to it.
+4. Keep the old clusters' registry entries, and give the new clusters' agents
+   those identities with the `keys` capability. Each agent then restores the
+   env's keys from escrow (see the app's
+   [A rebuilt cluster](https://github.com/cruxstack/k8s-sealed-secrets-sealer/blob/main/docs/operations.md#a-rebuilt-cluster)
+   and
+   [Losing a region](https://github.com/cruxstack/k8s-sealed-secrets-sealer/blob/main/docs/operations.md#losing-a-region)).
+
+Run one control plane at a time, and keep the old region's off when it comes
+back. Global tables settle concurrent writes by last writer wins, and the
+app's conditional writes and transactions hold only within one region. A
+replica is not a backup: it copies deletes and bad writes too, so keep
+point-in-time recovery, which the replicas also have.
 
 ### CloudFront in Front
 
@@ -187,7 +221,7 @@ for more details on these variables.
 | `envs`                         | envs to serve, by name; see [below](#envs)                                                                    | `map(object)`  | n/a                                     | yes      |
 | `github_app_config`            | `org`, `app_id`, `private_key`, `client_id`, `client_secret`, `installation_id`, `url`, `api_url` (sensitive) | `object`       | n/a                                     | yes      |
 | `control_plane_config`         | settings every env shares; see [below](#shared-settings)                                                      | `object`       | `{}`                                    | no       |
-| `dynamodb_config`              | `kms_key_arn` (default: a new key), `deletion_protection_enabled`                                             | `object`       | `{}`                                    | no       |
+| `dynamodb_config`              | `kms_key_arn` (default: a new key), `deletion_protection_enabled`, `replica_regions`, `replica_kms_key_arns`  | `object`       | `{}`                                    | no       |
 | `session_keys_config`          | `agent_session_key`, `user_session_key`; generated when empty                                                 | `object`       | `{}`                                    | no       |
 | `admin_token_config`           | `enabled`, `token`, `env_tokens`; generated when empty                                                        | `object`       | `{}`                                    | no       |
 | `ssm_config`                   | `parameter_prefix` (default `/<id>/`), `kms_key_arn`                                                          | `object`       | `{}`                                    | no       |
@@ -234,25 +268,26 @@ the public URL), `aws_sts_hosts`, and defaults for the env settings above.
 
 ## Outputs
 
-| Name                        | Description                                              |
-| --------------------------- | -------------------------------------------------------- |
-| `dynamodb_tables`           | each env's table name and ARN                            |
-| `dynamodb_kms_key_arn`      | ARN of the key of the tables the module creates          |
-| `ssm_parameter_arns`        | ARNs of the module's parameters, by name                 |
-| `admin_token`               | shared admin token (sensitive)                           |
-| `env_admin_tokens`          | envs' own admin tokens (sensitive)                       |
-| `lambda_function_name`      | name of the Lambda function                              |
-| `lambda_function_arn`       | ARN of the Lambda function                               |
-| `lambda_log_group_name`     | name of the function's log group                         |
-| `lambda_role_arn`           | ARN of the function's role, for the transit key policies |
-| `lambda_role_name`          | name of the function's role                              |
-| `api_gateway_id`            | ID of the HTTP API                                       |
-| `api_gateway_endpoint`      | default endpoint of the HTTP API                         |
-| `url`                       | public URL, for people and the agents                    |
-| `agent_audience`            | audience the agents' `identity.audience` must equal      |
-| `oauth_callback_url`        | callback URL for the GitHub App                          |
-| `api_gateway_domain_target` | alias target of the custom domain's DNS record           |
-| `scheduler_schedule_arn`    | ARN of the tick schedule                                 |
+| Name                            | Description                                               |
+| ------------------------------- | --------------------------------------------------------- |
+| `dynamodb_tables`               | each env's table: `name`, `arn`, and `replicas` by region |
+| `dynamodb_kms_key_arn`          | ARN of the key of the tables the module creates           |
+| `dynamodb_replica_kms_key_arns` | ARNs of the replicas' table keys, by region               |
+| `ssm_parameter_arns`            | ARNs of the module's parameters, by name                  |
+| `admin_token`                   | shared admin token (sensitive)                            |
+| `env_admin_tokens`              | envs' own admin tokens (sensitive)                        |
+| `lambda_function_name`          | name of the Lambda function                               |
+| `lambda_function_arn`           | ARN of the Lambda function                                |
+| `lambda_log_group_name`         | name of the function's log group                          |
+| `lambda_role_arn`               | ARN of the function's role, for the transit key policies  |
+| `lambda_role_name`              | name of the function's role                               |
+| `api_gateway_id`                | ID of the HTTP API                                        |
+| `api_gateway_endpoint`          | default endpoint of the HTTP API                          |
+| `url`                           | public URL, for people and the agents                     |
+| `agent_audience`                | audience the agents' `identity.audience` must equal       |
+| `oauth_callback_url`            | callback URL for the GitHub App                           |
+| `api_gateway_domain_target`     | alias target of the custom domain's DNS record            |
+| `scheduler_schedule_arn`        | ARN of the tick schedule                                  |
 
 Every output is null when the module is disabled.
 

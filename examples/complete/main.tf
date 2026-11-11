@@ -10,14 +10,14 @@ terraform {
 }
 
 provider "aws" {
-  region = "us-east-2"
+  region = "us-east-1"
 }
 
 module "sealer" {
   source = "../../"
 
   namespace   = "eg"
-  environment = "ue2"
+  environment = "ue1"
   stage       = "tools"
   name        = "sealer"
 
@@ -50,6 +50,11 @@ module "sealer" {
     admin_teams = ["platform"]
   }
 
+  # replicas of the tables, and of their key, for disaster recovery
+  dynamodb_config = {
+    replica_regions = ["us-east-2"]
+  }
+
   github_app_config = {
     org           = var.github_org
     app_id        = var.github_app_id
@@ -76,12 +81,12 @@ module "sealer" {
 
 variable "dev_transit_key_arn" {
   type        = string
-  description = "Dev transit key ARN, in the dev account"
+  description = "Dev transit key ARN, in the dev account and this region"
 }
 
 variable "prod_transit_key_arn" {
   type        = string
-  description = "Prod transit key ARN, in the prod account"
+  description = "Prod transit key ARN, in the prod account and this region"
 }
 
 variable "prod_registry_parameter_arn" {
@@ -146,6 +151,11 @@ output "oauth_callback_url" {
 output "lambda_role_arn" {
   description = "Role to allow on each env's transit key"
   value       = module.sealer.lambda_role_arn
+}
+
+output "dynamodb_replica_kms_key_arns" {
+  description = "Table keys in the replica regions, for a failover deployment"
+  value       = module.sealer.dynamodb_replica_kms_key_arns
 }
 
 output "admin_token" {
