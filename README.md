@@ -109,6 +109,11 @@ Install it on the organization, on the repositories people seal in.
 
 ### Transit Keys
 
+Make each env's transit key a multi-Region key, with a replica in every
+region the control plane may run in, and set `kms_transit_key_arn` to the
+replica in the module's region. A replica can only be made while its
+primary's region is up.
+
 Each env's transit key policy must allow the `lambda_role_arn` output, on the
 primary key and on every replica. Apply the module first: a key policy cannot
 name a role that does not exist yet.
@@ -128,6 +133,31 @@ name a role that does not exist yet.
   }
 }
 ```
+
+To allow a control plane that does not exist yet, such as one rebuilt in
+another region, name its account and match its role's ARN instead. Here each
+region's deployment is labelled by `environment`, so the roles are
+`use1-sealer` and `use2-sealer`:
+
+```json
+{
+  "Sid": "ControlPlanesEncryptForProd",
+  "Effect": "Allow",
+  "Principal": { "AWS": "arn:aws:iam::111111111111:root" },
+  "Action": "kms:GenerateDataKey",
+  "Resource": "*",
+  "Condition": {
+    "ArnLike": { "aws:PrincipalArn": "arn:aws:iam::111111111111:role/*-sealer" },
+    "StringEquals": {
+      "kms:EncryptionContext:env": "prod",
+      "kms:EncryptionContext:purpose": "seal"
+    }
+  }
+}
+```
+
+Whoever can create a role matching the pattern in that account can then call
+the key as the control plane does, so guard `iam:CreateRole` there.
 
 The agents' statements are in the app's
 [deployment guide](https://github.com/cruxstack/k8s-sealed-secrets-sealer/blob/main/docs/deployment.md#1-keys-in-each-envs-account).
@@ -167,7 +197,47 @@ Each env's table holds its escrowed sealing keys and revocations, which
 nothing else can rebuild. Deletion protection and point-in-time recovery are
 on. Add the tables to an AWS Backup plan with copies in another region; they
 carry the module's tags. To use a restored table, set the env's
-`dynamodb_table`.
+`dynamodb_table` to it and its KMS key, which must be in the module's region.
+
+### Region Failover
+
+The control plane can be rebuilt in another region, such as `us-east-2` when
+`us-east-1` is down. Prepare these while both regions are up:
+
+- **Keys:** each env's transit and escrow keys are multi-Region keys with a
+  replica there, whose policies allow the roles that will use them. Clusters
+  rebuilt there get the env's sealing keys only by decrypting escrow with
+  that replica. See [Transit Keys](#transit-keys) and the app's
+  [deployment guide](https://github.com/cruxstack/k8s-sealed-secrets-sealer/blob/main/docs/deployment.md#1-keys-in-each-envs-account).
+- **Tables:** the AWS Backup plan copies them to that region. Copies across
+  regions need DynamoDB's advanced backup features turned on.
+- **Domain:** an ACM certificate for the domain in that region.
+- **Parameters:** copies there of any secret or registry given as a parameter
+  ARN, and a key there for `ssm_config.kms_key_arn` if you set it.
+
+Then, in that region:
+
+1. Restore each env's table from its copy, with a KMS key in that region.
+2. Apply the module with its own label, such as `environment = "use2"`: IAM
+   role names are global, and the old deployment's roles still exist. Set
+   each env's `kms_transit_key_arn` to its replica there and
+   `dynamodb_table` to the restored table and its key. Keep `domain_name`,
+   with the new certificate, and leave `route53_zone_id` empty, since the
+   old deployment's record still exists. Point that record at the
+   `api_gateway_domain_target` output.
+3. Allow the new `lambda_role_arn` on each transit key's replica, unless a
+   pattern there already matches it.
+4. Finish each restore as the app's
+   [runbook](https://github.com/cruxstack/k8s-sealed-secrets-sealer/blob/main/docs/operations.md#restoring-the-table)
+   says: TTL, point-in-time recovery, the backup plan, and the revocations
+   made since the backup.
+5. Install the agents in the new clusters, each listed in its env's
+   registry, with `kms.transitKeyId` and `kms.escrowKeyId` set to the
+   replicas there. Each restores the env's keys from escrow.
+
+With the same domain, the agents' `controlPlane.url` and audience and the
+GitHub App's callback URL stay as they were. Generated session keys and admin
+tokens are new, so people and agents sign in again.
 
 ### CloudFront in Front
 
@@ -207,19 +277,19 @@ for more details on these variables.
 
 ### Envs
 
-| Field                     | Holds                                                               |
-| ------------------------- | ------------------------------------------------------------------- |
-| `kms_transit_key_arn`     | the env's transit key ARN (required); each env needs its own        |
-| `registry`                | the agent registry as YAML; or                                      |
-| `registry_parameter_arn`  | the ARN of a parameter holding it                                   |
-| `dynamodb_table`          | `name` and `kms_key_arn` of an existing table to use                |
-| `allowed_teams`           | team slugs that may use the env, replacing the shared ones          |
-| `admin_teams`             | team slugs of the env's admins, replacing the shared ones           |
-| `admin_token_key_changes` | lets the env's admin token revoke, reinstate, and delete keys       |
-| `env_annotation`          | annotation key that places a document in an env                     |
-| `region_annotation`       | annotation key that places a document in a region                   |
-| `discovery_file_globs`    | globs of the files searched for SealedSecrets                       |
-| `key_renew_period`        | how often a controller renews its key when no cluster does (`720h`) |
+| Field                     | Holds                                                                                 |
+| ------------------------- | ------------------------------------------------------------------------------------- |
+| `kms_transit_key_arn`     | the env's own transit key ARN (required); the replica in this region, if multi-Region |
+| `registry`                | the agent registry as YAML; or                                                        |
+| `registry_parameter_arn`  | the ARN of a parameter holding it                                                     |
+| `dynamodb_table`          | `name` and `kms_key_arn` of an existing table in this region                          |
+| `allowed_teams`           | team slugs that may use the env, replacing the shared ones                            |
+| `admin_teams`             | team slugs of the env's admins, replacing the shared ones                             |
+| `admin_token_key_changes` | lets the env's admin token revoke, reinstate, and delete keys                         |
+| `env_annotation`          | annotation key that places a document in an env                                       |
+| `region_annotation`       | annotation key that places a document in a region                                     |
+| `discovery_file_globs`    | globs of the files searched for SealedSecrets                                         |
+| `key_renew_period`        | how often a controller renews its key when no cluster does (`720h`)                   |
 
 Env names are DNS labels other than the UI's own paths (`api`, `secrets`,
 `fleet`, and so on). Teams given for an env replace the shared ones even when
