@@ -1,15 +1,28 @@
 # ================================================================ dynamodb ===
 
 output "dynamodb_tables" {
-  description = "Each env's table name and ARN, by env"
+  description = "Each env's table: name, ARN, and replica ARNs by region"
   value = local.enabled ? {
-    for name in local.env_names : name => { name = local.table_names[name], arn = local.table_arns[name] }
+    for name in local.env_names : name => {
+      name = local.table_names[name]
+      arn  = local.table_arns[name]
+      replicas = {
+        for region in local.replica_regions :
+        region => "arn:${local.aws_partition}:dynamodb:${region}:${local.aws_account_id}:table/${local.table_names[name]}"
+        if contains(keys(local.created_tables), name)
+      }
+    }
   } : null
 }
 
 output "dynamodb_kms_key_arn" {
-  description = "ARN of the KMS key of the tables the module creates"
+  description = "ARN of the key of the tables the module creates"
   value       = local.enabled && length(local.created_tables) > 0 ? local.table_kms_key_arn : null
+}
+
+output "dynamodb_replica_kms_key_arns" {
+  description = "ARNs of the replicas' table keys, by region"
+  value       = local.enabled && length(local.created_tables) > 0 ? local.replica_kms_key_arns : null
 }
 
 # ===================================================================== ssm ===

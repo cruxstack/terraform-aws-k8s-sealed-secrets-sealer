@@ -34,6 +34,12 @@ mock_provider "aws" {
       key_id = "table-key"
     }
   }
+  mock_resource "aws_kms_replica_key" {
+    defaults = {
+      arn    = "arn:aws:kms:us-west-2:111111111111:key/mrk-replica"
+      key_id = "mrk-replica"
+    }
+  }
   mock_resource "aws_ssm_parameter" {
     defaults = {
       arn     = "arn:aws:ssm:us-east-2:111111111111:parameter/mock"
@@ -202,11 +208,15 @@ run "defaults" {
       aws_dynamodb_table.this["prod"].point_in_time_recovery[0].enabled,
       aws_dynamodb_table.this["prod"].deletion_protection_enabled,
       aws_dynamodb_table.this["prod"].server_side_encryption[0].kms_key_arn == "arn:aws:kms:us-east-2:111111111111:key/table-key",
+      !aws_dynamodb_table.this["prod"].stream_enabled,
+      length(aws_dynamodb_table.this["prod"].replica) == 0,
+      aws_kms_key.dynamodb[0].multi_region,
+      length(aws_kms_replica_key.dynamodb) == 0,
       aws_kms_key.dynamodb[0].enable_key_rotation,
       aws_kms_key.dynamodb[0].deletion_window_in_days == 30,
       aws_kms_alias.dynamodb[0].name == "alias/sealer-dynamodb",
     ])
-    error_message = "the table should have pk/sk, ttl, pitr, deletion protection and the module's rotating key"
+    error_message = "the table should have pk/sk, ttl, pitr, deletion protection and a rotating multi-Region key, with no replicas"
   }
 
   assert {
@@ -243,8 +253,11 @@ run "defaults" {
       output.url == "https://abc123.execute-api.us-east-2.amazonaws.com",
       output.agent_audience == "https://abc123.execute-api.us-east-2.amazonaws.com",
       output.oauth_callback_url == "https://abc123.execute-api.us-east-2.amazonaws.com/api/v1/auth/callback",
-      output.dynamodb_tables.prod == { name = "sealer-prod", arn = "arn:aws:dynamodb:us-east-2:111111111111:table/sealer-prod" },
+      output.dynamodb_tables.prod.name == "sealer-prod",
+      output.dynamodb_tables.prod.arn == "arn:aws:dynamodb:us-east-2:111111111111:table/sealer-prod",
+      length(output.dynamodb_tables.prod.replicas) == 0,
       output.dynamodb_kms_key_arn == "arn:aws:kms:us-east-2:111111111111:key/table-key",
+      length(output.dynamodb_replica_kms_key_arns) == 0,
       output.scheduler_schedule_arn == "arn:aws:scheduler:us-east-2:111111111111:schedule/default/sealer-tick",
       output.lambda_role_arn == "arn:aws:iam::111111111111:role/mock",
       output.api_gateway_domain_target == null,
@@ -582,6 +595,113 @@ run "secret_arns" {
       ])
     ])
     error_message = "the function should read exactly the given parameters"
+  }
+}
+
+run "replicas" {
+  command = plan
+
+  variables {
+    dynamodb_config = { replica_regions = ["us-west-2", "eu-west-1"] }
+  }
+
+  assert {
+    condition = alltrue([
+      aws_dynamodb_table.this["prod"].stream_enabled,
+      aws_dynamodb_table.this["prod"].stream_view_type == "NEW_AND_OLD_IMAGES",
+      toset([for r in aws_dynamodb_table.this["prod"].replica : r.region_name]) == toset(["us-west-2", "eu-west-1"]),
+      alltrue([
+        for r in aws_dynamodb_table.this["prod"].replica :
+        r.kms_key_arn == "arn:aws:kms:us-west-2:111111111111:key/mrk-replica" && r.point_in_time_recovery && r.deletion_protection_enabled && r.propagate_tags
+      ]),
+    ])
+    error_message = "the table should stream to a replica in each region, each with its region's key, pitr and deletion protection"
+  }
+
+  assert {
+    condition = alltrue([
+      aws_kms_key.dynamodb[0].multi_region,
+      toset(keys(aws_kms_replica_key.dynamodb)) == toset(["us-west-2", "eu-west-1"]),
+      aws_kms_replica_key.dynamodb["eu-west-1"].region == "eu-west-1",
+      aws_kms_replica_key.dynamodb["eu-west-1"].primary_key_arn == "arn:aws:kms:us-east-2:111111111111:key/table-key",
+      aws_kms_replica_key.dynamodb["eu-west-1"].deletion_window_in_days == 30,
+      aws_kms_replica_key.dynamodb["eu-west-1"].policy == aws_kms_key.dynamodb[0].policy,
+      aws_kms_alias.dynamodb_replica["eu-west-1"].region == "eu-west-1",
+      aws_kms_alias.dynamodb_replica["eu-west-1"].name == "alias/sealer-dynamodb",
+      aws_kms_alias.dynamodb_replica["eu-west-1"].target_key_id == "mrk-replica",
+    ])
+    error_message = "the table key should have a replica and an alias in each region"
+  }
+
+  assert {
+    condition = alltrue([
+      output.dynamodb_tables.prod.replicas == {
+        us-west-2 = "arn:aws:dynamodb:us-west-2:111111111111:table/sealer-prod"
+        eu-west-1 = "arn:aws:dynamodb:eu-west-1:111111111111:table/sealer-prod"
+      },
+      output.dynamodb_replica_kms_key_arns["eu-west-1"] == "arn:aws:kms:us-west-2:111111111111:key/mrk-replica",
+      length(output.dynamodb_replica_kms_key_arns) == 2,
+    ])
+    error_message = "the outputs should name each replica and its key"
+  }
+}
+
+run "replicas_given_key" {
+  command = plan
+
+  variables {
+    dynamodb_config = {
+      kms_key_arn          = "arn:aws:kms:us-east-2:111111111111:key/mrk-given"
+      replica_regions      = ["us-west-2"]
+      replica_kms_key_arns = { us-west-2 = "arn:aws:kms:us-west-2:111111111111:key/mrk-given" }
+    }
+  }
+
+  assert {
+    condition = alltrue([
+      length(aws_kms_key.dynamodb) == 0,
+      length(aws_kms_replica_key.dynamodb) == 0,
+      [for r in aws_dynamodb_table.this["prod"].replica : r.kms_key_arn] == ["arn:aws:kms:us-west-2:111111111111:key/mrk-given"],
+      output.dynamodb_replica_kms_key_arns["us-west-2"] == "arn:aws:kms:us-west-2:111111111111:key/mrk-given",
+      length(output.dynamodb_replica_kms_key_arns) == 1,
+    ])
+    error_message = "a given key's replicas should use the given replica keys"
+  }
+}
+
+run "dr_failover" {
+  command = plan
+
+  variables {
+    environment = "ue2"
+    envs = {
+      prod = {
+        kms_transit_key_arn = "arn:aws:kms:us-east-2:333333333333:key/mrk-prod"
+        registry            = "agents: [{id: prod-use1-blue}]\n"
+        dynamodb_table = {
+          name        = "ue1-sealer-prod"
+          kms_key_arn = "arn:aws:kms:us-east-2:111111111111:key/mrk-table"
+        }
+      }
+    }
+  }
+
+  assert {
+    condition = alltrue([
+      aws_iam_role.this[0].name == "ue2-sealer",
+      length(aws_dynamodb_table.this) == 0,
+      length(aws_kms_key.dynamodb) == 0,
+      aws_lambda_function.this[0].environment[0].variables["APP_DYNAMODB_TABLE"] == "ue1-sealer-prod",
+      anytrue([
+        for s in data.aws_iam_policy_document.this[0].statement :
+        s.sid == "Tables" && s.resources == toset(["arn:aws:dynamodb:us-east-2:111111111111:table/ue1-sealer-prod"])
+      ]),
+      anytrue([
+        for s in data.aws_iam_policy_document.this[0].statement :
+        s.sid == "TableKeys" && s.resources == toset(["arn:aws:kms:us-east-2:111111111111:key/mrk-table"])
+      ]),
+    ])
+    error_message = "a deployment in the DR region should use the replica table and its key, under its own label"
   }
 }
 

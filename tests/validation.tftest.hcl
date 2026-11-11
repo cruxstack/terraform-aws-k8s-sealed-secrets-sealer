@@ -34,6 +34,12 @@ mock_provider "aws" {
       key_id = "table-key"
     }
   }
+  mock_resource "aws_kms_replica_key" {
+    defaults = {
+      arn    = "arn:aws:kms:us-west-2:111111111111:key/mrk-replica"
+      key_id = "mrk-replica"
+    }
+  }
   mock_resource "aws_ssm_parameter" {
     defaults = {
       arn     = "arn:aws:ssm:us-east-2:111111111111:parameter/mock"
@@ -466,6 +472,66 @@ run "rejects_dynamodb_key_alias" {
   expect_failures = [var.dynamodb_config]
 }
 
+run "rejects_replica_region" {
+  command = plan
+
+  variables {
+    dynamodb_config = { replica_regions = ["us-east"] }
+  }
+
+  expect_failures = [var.dynamodb_config]
+}
+
+run "rejects_repeated_replica_region" {
+  command = plan
+
+  variables {
+    dynamodb_config = { replica_regions = ["us-west-2", "us-west-2"] }
+  }
+
+  expect_failures = [var.dynamodb_config]
+}
+
+run "rejects_given_key_without_replica_keys" {
+  command = plan
+
+  variables {
+    dynamodb_config = {
+      kms_key_arn     = "arn:aws:kms:us-east-2:111111111111:key/mrk-given"
+      replica_regions = ["us-west-2"]
+    }
+  }
+
+  expect_failures = [var.dynamodb_config]
+}
+
+run "rejects_replica_keys_without_key" {
+  command = plan
+
+  variables {
+    dynamodb_config = {
+      replica_regions      = ["us-west-2"]
+      replica_kms_key_arns = { us-west-2 = "arn:aws:kms:us-west-2:111111111111:key/mrk-given" }
+    }
+  }
+
+  expect_failures = [var.dynamodb_config]
+}
+
+run "rejects_replica_key_in_other_region" {
+  command = plan
+
+  variables {
+    dynamodb_config = {
+      kms_key_arn          = "arn:aws:kms:us-east-2:111111111111:key/mrk-given"
+      replica_regions      = ["us-west-2"]
+      replica_kms_key_arns = { us-west-2 = "arn:aws:kms:us-east-2:111111111111:key/mrk-given" }
+    }
+  }
+
+  expect_failures = [var.dynamodb_config]
+}
+
 # ===================================================================== ssm ===
 
 run "rejects_short_session_key" {
@@ -586,6 +652,16 @@ run "rejects_key_changes_without_token" {
         admin_token_key_changes = true
       }
     }
+  }
+
+  expect_failures = [aws_lambda_function.this]
+}
+
+run "rejects_replica_in_own_region" {
+  command = plan
+
+  variables {
+    dynamodb_config = { replica_regions = ["us-east-2"] }
   }
 
   expect_failures = [aws_lambda_function.this]

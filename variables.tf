@@ -179,16 +179,39 @@ variable "control_plane_config" {
 # ================================================================ dynamodb ===
 
 variable "dynamodb_config" {
-  description = "`kms_key_arn` for the tables the module creates (default: a new key), and `deletion_protection_enabled`. The tables hold escrowed keys; turn protection off only to destroy an env."
+  description = "Tables the module creates: `kms_key_arn` (default: a new multi-Region key), `deletion_protection_enabled` (they hold escrowed keys), and `replica_regions` for global table replicas. With `kms_key_arn`, `replica_kms_key_arns` gives each replica region's key."
   type = object({
     kms_key_arn                 = optional(string, "")
     deletion_protection_enabled = optional(bool, true)
+    replica_regions             = optional(list(string), [])
+    replica_kms_key_arns        = optional(map(string), {})
   })
   default = {}
 
   validation {
     condition     = var.dynamodb_config.kms_key_arn == "" || can(regex("^arn:aws[a-z-]*:kms:[a-z0-9-]+:[0-9]{12}:key/[A-Za-z0-9-]+$", var.dynamodb_config.kms_key_arn))
     error_message = "dynamodb_config.kms_key_arn must be a KMS key ARN."
+  }
+
+  validation {
+    condition = (
+      alltrue([for region in var.dynamodb_config.replica_regions : can(regex("^[a-z]{2}(-[a-z]+)+-[0-9]+$", region))]) &&
+      length(distinct(var.dynamodb_config.replica_regions)) == length(var.dynamodb_config.replica_regions)
+    )
+    error_message = "dynamodb_config.replica_regions must be distinct AWS regions."
+  }
+
+  validation {
+    condition = (
+      var.dynamodb_config.kms_key_arn == "" ? length(var.dynamodb_config.replica_kms_key_arns) == 0 :
+      alltrue([for region in var.dynamodb_config.replica_regions : contains(keys(var.dynamodb_config.replica_kms_key_arns), region)])
+    )
+    error_message = "replica_kms_key_arns needs kms_key_arn, and with it a key for each replica region."
+  }
+
+  validation {
+    condition     = alltrue([for region, arn in var.dynamodb_config.replica_kms_key_arns : can(regex("^arn:aws[a-z-]*:kms:${region}:[0-9]{12}:key/[A-Za-z0-9-]+$", arn))])
+    error_message = "replica_kms_key_arns must be KMS key ARNs in their regions."
   }
 }
 

@@ -29,8 +29,14 @@ locals {
     for name, table in local.table_names : name => "arn:${local.aws_partition}:dynamodb:${local.aws_region_name}:${local.aws_account_id}:table/${table}"
   }
 
+  replica_regions   = var.dynamodb_config.replica_regions
   create_table_key  = local.enabled && length(local.created_tables) > 0 && var.dynamodb_config.kms_key_arn == ""
   table_kms_key_arn = var.dynamodb_config.kms_key_arn != "" ? var.dynamodb_config.kms_key_arn : one(aws_kms_key.dynamodb[*].arn)
+  replica_kms_key_arns = {
+    for region in local.replica_regions : region => (
+      var.dynamodb_config.kms_key_arn != "" ? lookup(var.dynamodb_config.replica_kms_key_arns, region, null) : try(aws_kms_replica_key.dynamodb[region].arn, null)
+    )
+  }
 }
 
 resource "aws_dynamodb_table" "this" {
@@ -41,6 +47,10 @@ resource "aws_dynamodb_table" "this" {
   hash_key                    = "pk"
   range_key                   = "sk"
   deletion_protection_enabled = var.dynamodb_config.deletion_protection_enabled
+
+  # global tables replicate through the stream
+  stream_enabled   = length(local.replica_regions) > 0
+  stream_view_type = length(local.replica_regions) > 0 ? "NEW_AND_OLD_IMAGES" : null
 
   attribute {
     name = "pk"
@@ -66,13 +76,27 @@ resource "aws_dynamodb_table" "this" {
     kms_key_arn = local.table_kms_key_arn
   }
 
+  dynamic "replica" {
+    for_each = local.replica_regions
+
+    content {
+      region_name                 = replica.value
+      kms_key_arn                 = local.replica_kms_key_arns[replica.value]
+      point_in_time_recovery      = true
+      deletion_protection_enabled = var.dynamodb_config.deletion_protection_enabled
+      propagate_tags              = true
+    }
+  }
+
   tags = module.this.tags
 }
 
+# multi-Region from the start, since turning it on later replaces the key
 resource "aws_kms_key" "dynamodb" {
   count = local.create_table_key ? 1 : 0
 
   description             = "Encrypts the DynamoDB tables of ${module.this.id}"
+  multi_region            = true
   enable_key_rotation     = true
   deletion_window_in_days = 30
   policy                  = data.aws_iam_policy_document.dynamodb_key[0].json
@@ -85,6 +109,26 @@ resource "aws_kms_alias" "dynamodb" {
 
   name          = "alias/${module.this.id}-dynamodb"
   target_key_id = aws_kms_key.dynamodb[0].key_id
+}
+
+resource "aws_kms_replica_key" "dynamodb" {
+  for_each = local.create_table_key ? toset(local.replica_regions) : toset([])
+
+  region                  = each.key
+  description             = "Encrypts the DynamoDB table replicas of ${module.this.id}"
+  primary_key_arn         = aws_kms_key.dynamodb[0].arn
+  deletion_window_in_days = 30
+  policy                  = data.aws_iam_policy_document.dynamodb_key[0].json
+
+  tags = module.this.tags
+}
+
+resource "aws_kms_alias" "dynamodb_replica" {
+  for_each = aws_kms_replica_key.dynamodb
+
+  region        = each.key
+  name          = "alias/${module.this.id}-dynamodb"
+  target_key_id = each.value.key_id
 }
 
 data "aws_iam_policy_document" "dynamodb_key" {
@@ -312,6 +356,11 @@ resource "aws_lambda_function" "this" {
     precondition {
       condition     = length(distinct(values(local.table_names))) == length(local.table_names)
       error_message = "Each env needs its own DynamoDB table."
+    }
+
+    precondition {
+      condition     = !contains(local.replica_regions, local.aws_region_name)
+      error_message = "dynamodb_config.replica_regions must not include the module's own region."
     }
   }
 
