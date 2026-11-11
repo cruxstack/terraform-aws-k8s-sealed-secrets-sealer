@@ -28,7 +28,7 @@ variable "envs" {
     condition = alltrue([
       for name in keys(var.envs) :
       can(regex("^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$", name)) &&
-      !contains(["agent", "api", "assets", "auth", "fleet", "healthz", "login", "readyz", "repos", "secrets", "static"], name)
+      !contains(["agent", "api", "assets", "auth", "fleet", "healthz", "login", "readyz", "repos", "secrets", "setup", "static"], name)
     ])
     error_message = "Env names must be DNS labels, and not one of the UI's paths (api, secrets, fleet, ...)."
   }
@@ -89,15 +89,16 @@ variable "envs" {
 }
 
 variable "github_app_config" {
-  description = "The GitHub App that reads repositories, opens pull requests and signs people in. `private_key` and `client_secret` may be SSM parameter ARNs; `url` and `api_url` are for GitHub Enterprise Server."
+  description = "The GitHub App that reads repositories, opens pull requests and signs people in, in `org`. Give `app_id`, `private_key`, `client_id` and `client_secret` (the key and secret may be SSM parameter ARNs), or leave all four out to create the App from the setup page, which stores them in `parameter_arn` (default `<parameter_prefix>github-app`). `url` and `api_url` are for GitHub Enterprise Server."
   sensitive   = true
   type = object({
     org             = string
-    app_id          = string
-    private_key     = string
+    app_id          = optional(string, "")
+    private_key     = optional(string, "")
     installation_id = optional(string, "")
-    client_id       = string
-    client_secret   = string
+    client_id       = optional(string, "")
+    client_secret   = optional(string, "")
+    parameter_arn   = optional(string, "")
     url             = optional(string, "")
     api_url         = optional(string, "")
   })
@@ -107,19 +108,27 @@ variable "github_app_config" {
     error_message = "github_app_config.org must be a GitHub organization name."
   }
 
+  # the setup page stores all four, so they come together or not at all
   validation {
-    condition     = can(regex("^[0-9]+$", var.github_app_config.app_id)) && can(regex("^[0-9]*$", var.github_app_config.installation_id))
+    condition = length(distinct([
+      for v in [var.github_app_config.app_id, var.github_app_config.private_key, var.github_app_config.client_id, var.github_app_config.client_secret] : v == ""
+    ])) == 1
+    error_message = "github_app_config needs app_id, private_key, client_id and client_secret, or none of them to create the App from the setup page."
+  }
+
+  validation {
+    condition     = can(regex("^[0-9]*$", var.github_app_config.app_id)) && can(regex("^[0-9]*$", var.github_app_config.installation_id))
     error_message = "github_app_config.app_id and installation_id must be numbers."
   }
 
   validation {
-    condition     = strcontains(var.github_app_config.private_key, "PRIVATE KEY-----") || can(regex("^arn:aws(-[a-z]+)*:ssm:[a-z0-9-]+:[0-9]{12}:parameter/[A-Za-z0-9_./-]+$", var.github_app_config.private_key))
+    condition     = var.github_app_config.private_key == "" || strcontains(var.github_app_config.private_key, "PRIVATE KEY-----") || can(regex("^arn:aws(-[a-z]+)*:ssm:[a-z0-9-]+:[0-9]{12}:parameter/[A-Za-z0-9_./-]+$", var.github_app_config.private_key))
     error_message = "github_app_config.private_key must be a PEM private key or an SSM parameter ARN."
   }
 
   validation {
-    condition     = var.github_app_config.client_id != "" && var.github_app_config.client_secret != ""
-    error_message = "github_app_config.client_id and client_secret are required."
+    condition     = var.github_app_config.parameter_arn == "" || (var.github_app_config.app_id == "" && can(regex("^arn:aws(-[a-z]+)*:ssm:[a-z0-9-]+:[0-9]{12}:parameter/[A-Za-z0-9_./-]+$", var.github_app_config.parameter_arn)))
+    error_message = "github_app_config.parameter_arn must be an SSM parameter ARN, and is only for an App created from the setup page."
   }
 
   validation {
@@ -261,11 +270,11 @@ variable "ssm_parameter_arns" {
 variable "app_version" {
   description = "Release of k8s-sealed-secrets-sealer to deploy."
   type        = string
-  default     = "v0.10.0"
+  default     = "v0.11.0"
 
   validation {
     condition     = can(regex("^v[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$", var.app_version))
-    error_message = "app_version must be a release tag, such as v0.10.0."
+    error_message = "app_version must be a release tag, such as v0.11.0."
   }
 }
 

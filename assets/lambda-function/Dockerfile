@@ -9,7 +9,7 @@ FROM alpine:3.24 AS download
 
 # a release tag of k8s-sealed-secrets-sealer, and the repository it is
 # released from (owner/name, for forks)
-ARG APP_VERSION=v0.10.0
+ARG APP_VERSION=v0.11.0
 ARG APP_REPO=cruxstack/k8s-sealed-secrets-sealer
 ARG GOARCH=arm64
 

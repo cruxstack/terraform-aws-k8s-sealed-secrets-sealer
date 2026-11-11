@@ -151,6 +151,21 @@ run "rejects_reserved_env_name" {
   expect_failures = [var.envs]
 }
 
+run "rejects_setup_env_name" {
+  command = plan
+
+  variables {
+    envs = {
+      setup = {
+        kms_transit_key_arn = "arn:aws:kms:us-east-2:333333333333:key/mrk-prod"
+        registry            = "agents: [{id: prod-use1-blue}]\n"
+      }
+    }
+  }
+
+  expect_failures = [var.envs]
+}
+
 run "rejects_transit_key_alias" {
   command = plan
 
@@ -402,6 +417,63 @@ run "rejects_github_url" {
   }
 
   expect_failures = [var.github_app_config]
+}
+
+run "rejects_github_partial_credentials" {
+  command = plan
+
+  variables {
+    github_app_config = {
+      org         = "acme"
+      app_id      = "123456"
+      private_key = "-----BEGIN RSA PRIVATE KEY-----\nkey\n-----END RSA PRIVATE KEY-----"
+    }
+  }
+
+  expect_failures = [var.github_app_config]
+}
+
+run "rejects_github_parameter_with_credentials" {
+  command = plan
+
+  variables {
+    github_app_config = {
+      org           = "acme"
+      app_id        = "123456"
+      private_key   = "-----BEGIN RSA PRIVATE KEY-----\nkey\n-----END RSA PRIVATE KEY-----"
+      client_id     = "Iv23liexample"
+      client_secret = "an-oauth-client-secret"
+      parameter_arn = "arn:aws:ssm:us-east-2:111111111111:parameter/sealer/github-app"
+    }
+  }
+
+  expect_failures = [var.github_app_config]
+}
+
+run "rejects_github_parameter_name" {
+  command = plan
+
+  variables {
+    github_app_config = {
+      org           = "acme"
+      parameter_arn = "/sealer/github-app"
+    }
+  }
+
+  expect_failures = [var.github_app_config]
+}
+
+run "rejects_github_parameter_in_other_account" {
+  command = plan
+
+  variables {
+    github_app_config = {
+      org           = "acme"
+      parameter_arn = "arn:aws:ssm:us-east-2:222222222222:parameter/sealer/github-app"
+    }
+  }
+
+  expect_failures = [aws_lambda_function.this]
 }
 
 run "rejects_session_ttl" {

@@ -131,10 +131,10 @@ run "defaults" {
       buildkit_artifact.app[0].target == "package",
       buildkit_artifact.app[0].artifact_src_path == "/tmp/package.zip",
       buildkit_artifact.app[0].artifact_dst_path == "./dist/sealer/package.zip",
-      buildkit_artifact.app[0].build_args == tomap({ APP_VERSION = "v0.10.0", APP_REPO = "cruxstack/k8s-sealed-secrets-sealer", GOARCH = "arm64" }),
+      buildkit_artifact.app[0].build_args == tomap({ APP_VERSION = "v0.11.0", APP_REPO = "cruxstack/k8s-sealed-secrets-sealer", GOARCH = "arm64" }),
       buildkit_artifact.app[0].triggers == tomap({
         context          = "sha256:context"
-        app_version      = "v0.10.0"
+        app_version      = "v0.11.0"
         app_repo         = "cruxstack/k8s-sealed-secrets-sealer"
         goarch           = "arm64"
         force_rebuild_id = ""
@@ -618,6 +618,73 @@ run "secret_arns" {
       ])
     ])
     error_message = "the function should read exactly the given parameters"
+  }
+}
+
+# without the App's credentials, the setup page creates the App and stores them
+run "github_app_setup" {
+  command = plan
+
+  variables {
+    github_app_config = {
+      org = "acme"
+    }
+  }
+
+  assert {
+    condition = alltrue([
+      aws_lambda_function.this[0].environment[0].variables["APP_GITHUB_APP_PARAMETER"] == "arn:aws:ssm:us-east-2:111111111111:parameter/sealer/github-app",
+      aws_lambda_function.this[0].environment[0].variables["APP_GITHUB_ORG"] == "acme",
+      length(setintersection(keys(aws_lambda_function.this[0].environment[0].variables), [
+        "APP_GITHUB_APP_ID", "APP_GITHUB_APP_PRIVATE_KEY", "APP_GITHUB_OAUTH_CLIENT_ID", "APP_GITHUB_OAUTH_CLIENT_SECRET", "APP_GITHUB_APP_INSTALLATION_ID",
+      ])) == 0,
+      toset(keys(aws_ssm_parameter.secret)) == toset(["APP_AGENT_SESSION_KEY", "APP_USER_SESSION_KEY"]),
+      output.github_app_parameter_arn == "arn:aws:ssm:us-east-2:111111111111:parameter/sealer/github-app",
+    ])
+    error_message = "the function should get the App's parameter, and none of the settings the app refuses beside it"
+  }
+
+  assert {
+    condition = {
+      for s in data.aws_iam_policy_document.this[0].statement : s.sid => [s.actions, s.resources] if s.sid == "GitHubAppParameter"
+      } == {
+      GitHubAppParameter = [
+        toset(["ssm:GetParameter", "ssm:PutParameter"]),
+        toset(["arn:aws:ssm:us-east-2:111111111111:parameter/sealer/github-app"]),
+      ]
+    }
+    error_message = "the function should read and write only the App's parameter"
+  }
+
+  assert {
+    condition = !contains(
+      flatten([for s in data.aws_iam_policy_document.this[0].statement : s.resources if s.sid == "ReadParameters"]),
+      "arn:aws:ssm:us-east-2:111111111111:parameter/sealer/github-app",
+    )
+    error_message = "the App's parameter should not be among the ones read at start"
+  }
+}
+
+run "github_app_own_parameter" {
+  command = plan
+
+  variables {
+    github_app_config = {
+      org           = "acme"
+      parameter_arn = "arn:aws:ssm:us-east-1:111111111111:parameter/platform/sealer-github-app"
+    }
+  }
+
+  assert {
+    condition = alltrue([
+      aws_lambda_function.this[0].environment[0].variables["APP_GITHUB_APP_PARAMETER"] == "arn:aws:ssm:us-east-1:111111111111:parameter/platform/sealer-github-app",
+      output.github_app_parameter_arn == "arn:aws:ssm:us-east-1:111111111111:parameter/platform/sealer-github-app",
+      anytrue([
+        for s in data.aws_iam_policy_document.this[0].statement :
+        s.sid == "GitHubAppParameter" && s.resources == toset(["arn:aws:ssm:us-east-1:111111111111:parameter/platform/sealer-github-app"])
+      ]),
+    ])
+    error_message = "a given parameter, in any region of the account, should replace the module's"
   }
 }
 

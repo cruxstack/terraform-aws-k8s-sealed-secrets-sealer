@@ -118,13 +118,24 @@ locals {
   admin_enabled   = nonsensitive(var.admin_token_config.enabled)
   env_token_names = nonsensitive(toset(keys(var.admin_token_config.env_tokens)))
 
+  # without the App's credentials, which come all together or not at all, the
+  # setup page creates the App and writes them to this parameter, once; the
+  # module never manages it, so it outlives a destroy
+  github_app_setup = nonsensitive(var.github_app_config.app_id == "")
+  github_app_parameter_arn = local.github_app_setup ? coalesce(
+    nonsensitive(var.github_app_config.parameter_arn),
+    "arn:${local.aws_partition}:ssm:${local.aws_region_name}:${local.aws_account_id}:parameter${local.ssm_parameter_prefix}github-app",
+  ) : null
+
   # each secret by its parameter name: a value, a parameter arn, or "" to generate
   secrets = merge(
-    {
+    local.github_app_setup ? {} : {
       APP_GITHUB_APP_PRIVATE_KEY     = var.github_app_config.private_key
       APP_GITHUB_OAUTH_CLIENT_SECRET = var.github_app_config.client_secret
-      APP_AGENT_SESSION_KEY          = var.session_keys_config.agent_session_key
-      APP_USER_SESSION_KEY           = var.session_keys_config.user_session_key
+    },
+    {
+      APP_AGENT_SESSION_KEY = var.session_keys_config.agent_session_key
+      APP_USER_SESSION_KEY  = var.session_keys_config.user_session_key
     },
     local.admin_enabled ? { APP_ADMIN_TOKEN = var.admin_token_config.token } : {},
     { for env in local.env_token_names : "envs/${env}/admin-token" => var.admin_token_config.env_tokens[env] },
@@ -242,6 +253,7 @@ locals {
       APP_AGENT_AUDIENCE             = var.control_plane_config.agent_audience
       APP_AWS_STS_HOSTS              = join(",", var.control_plane_config.aws_sts_hosts)
       APP_GITHUB_ORG                 = nonsensitive(var.github_app_config.org)
+      APP_GITHUB_APP_PARAMETER       = local.github_app_parameter_arn
       APP_GITHUB_APP_ID              = nonsensitive(var.github_app_config.app_id)
       APP_GITHUB_APP_INSTALLATION_ID = nonsensitive(var.github_app_config.installation_id)
       APP_GITHUB_OAUTH_CLIENT_ID     = nonsensitive(var.github_app_config.client_id)
@@ -329,6 +341,13 @@ resource "aws_lambda_function" "this" {
     precondition {
       condition     = var.ssm_config.kms_key_arn == "" || split(":", var.ssm_config.kms_key_arn)[3] == local.aws_region_name
       error_message = "ssm_config.kms_key_arn must be a key in ${local.aws_region_name}, where the parameters are."
+    }
+
+    # the app writes the parameter by name, in its own account, and reads it
+    # back by its arn
+    precondition {
+      condition     = local.github_app_parameter_arn == null || split(":", local.github_app_parameter_arn)[4] == local.aws_account_id
+      error_message = "github_app_config.parameter_arn must be in account ${local.aws_account_id}, where the setup page writes it."
     }
   }
 
@@ -504,6 +523,19 @@ data "aws_iam_policy_document" "this" {
       effect    = "Allow"
       actions   = ["ssm:GetParameter"]
       resources = local.parameter_arns
+    }
+  }
+
+  # the setup page writes the App's credentials once, under the account's
+  # aws/ssm key, whose own policy lets the account use it through ssm
+  dynamic "statement" {
+    for_each = local.github_app_setup ? [1] : []
+
+    content {
+      sid       = "GitHubAppParameter"
+      effect    = "Allow"
+      actions   = ["ssm:GetParameter", "ssm:PutParameter"]
+      resources = [local.github_app_parameter_arn]
     }
   }
 
