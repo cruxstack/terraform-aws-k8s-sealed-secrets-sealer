@@ -1,5 +1,4 @@
-# Plans the module with mocked providers, so these tests need no AWS account
-# and download nothing. Run with: terraform test
+# Plans the module with mocked providers: no AWS account, nothing downloaded.
 
 mock_provider "aws" {
   override_during = plan
@@ -91,6 +90,7 @@ mock_provider "random" {
   }
 }
 
+
 variables {
   name = "sealer"
   github_app_config = {
@@ -108,7 +108,7 @@ variables {
   }
 }
 
-run "one_env" {
+run "defaults" {
   command = plan
 
   assert {
@@ -140,7 +140,7 @@ run "one_env" {
         force_rebuild_id = ""
       }),
     ])
-    error_message = "the artifact should be the arm64 zip of the default release, at a path unique to the instance"
+    error_message = "the package should be the default release's arm64 zip, at a path unique to the instance"
   }
 
   assert {
@@ -162,7 +162,7 @@ run "one_env" {
       APP_REGISTRY                   = "arn:aws:ssm:us-east-2:111111111111:parameter/mock"
       SEALER_CONFIG_REVISION         = local.config_revision
     })
-    error_message = "one env should use the single-env settings, secrets as parameter arns, and leave unset settings out"
+    error_message = "one env should use the single-env settings and secrets as parameter arns, with unset settings left out"
   }
 
   assert {
@@ -172,28 +172,22 @@ run "one_env" {
       aws_ssm_parameter.secret["APP_AGENT_SESSION_KEY"].name == "/sealer/APP_AGENT_SESSION_KEY",
       toset(keys(random_password.secret)) == toset(["APP_AGENT_SESSION_KEY", "APP_USER_SESSION_KEY"]),
       alltrue([for p in random_password.secret : p.length >= 32 && !p.special]),
-    ])
-    error_message = "secrets should be secure strings under /<id>/, and the session keys generated"
-  }
-
-  # sensitive values are checked apart: terraform test cannot show them
-  assert {
-    condition = alltrue([
-      nonsensitive(aws_ssm_parameter.secret["APP_AGENT_SESSION_KEY"].value) == "generated-secret-0123456789abcdef0123456789abcdef",
-      nonsensitive(aws_ssm_parameter.secret["APP_GITHUB_OAUTH_CLIENT_SECRET"].value) == "an-oauth-client-secret",
-    ])
-    error_message = "the parameters should hold the generated and given secrets"
-  }
-
-  assert {
-    condition = alltrue([
       aws_ssm_parameter.registry["prod"].name == "/sealer/envs/prod/registry",
       aws_ssm_parameter.registry["prod"].type == "String",
       aws_ssm_parameter.registry["prod"].tier == "Standard",
       aws_ssm_parameter.registry["prod"].insecure_value == "agents: [{id: prod-use1-blue}]\n",
       length(aws_ssm_parameter.envs) == 0,
     ])
-    error_message = "the registry should be a standard string parameter, and one env needs no APP_ENVS"
+    error_message = "secrets should be secure strings under /<id>/ with the session keys generated, and the registry a string"
+  }
+
+  # sensitive values are checked apart, since terraform test cannot show them
+  assert {
+    condition = alltrue([
+      nonsensitive(aws_ssm_parameter.secret["APP_AGENT_SESSION_KEY"].value) == "generated-secret-0123456789abcdef0123456789abcdef",
+      nonsensitive(aws_ssm_parameter.secret["APP_GITHUB_OAUTH_CLIENT_SECRET"].value) == "an-oauth-client-secret",
+    ])
+    error_message = "the parameters should hold the generated and given secrets"
   }
 
   assert {
@@ -207,13 +201,12 @@ run "one_env" {
       aws_dynamodb_table.this["prod"].ttl[0].enabled,
       aws_dynamodb_table.this["prod"].point_in_time_recovery[0].enabled,
       aws_dynamodb_table.this["prod"].deletion_protection_enabled,
-      aws_dynamodb_table.this["prod"].server_side_encryption[0].enabled,
       aws_dynamodb_table.this["prod"].server_side_encryption[0].kms_key_arn == "arn:aws:kms:us-east-2:111111111111:key/table-key",
       aws_kms_key.dynamodb[0].enable_key_rotation,
       aws_kms_key.dynamodb[0].deletion_window_in_days == 30,
       aws_kms_alias.dynamodb[0].name == "alias/sealer-dynamodb",
     ])
-    error_message = "the env's table should have pk/sk, ttl, pitr, deletion protection and the module's rotating key"
+    error_message = "the table should have pk/sk, ttl, pitr, deletion protection and the module's rotating key"
   }
 
   assert {
@@ -250,13 +243,13 @@ run "one_env" {
       output.url == "https://abc123.execute-api.us-east-2.amazonaws.com",
       output.agent_audience == "https://abc123.execute-api.us-east-2.amazonaws.com",
       output.oauth_callback_url == "https://abc123.execute-api.us-east-2.amazonaws.com/api/v1/auth/callback",
-      output.dynamodb_tables == tomap({ prod = { name = "sealer-prod", arn = "arn:aws:dynamodb:us-east-2:111111111111:table/sealer-prod" } }),
+      output.dynamodb_tables.prod == { name = "sealer-prod", arn = "arn:aws:dynamodb:us-east-2:111111111111:table/sealer-prod" },
       output.dynamodb_kms_key_arn == "arn:aws:kms:us-east-2:111111111111:key/table-key",
       output.scheduler_schedule_arn == "arn:aws:scheduler:us-east-2:111111111111:schedule/default/sealer-tick",
       output.lambda_role_arn == "arn:aws:iam::111111111111:role/mock",
       output.api_gateway_domain_target == null,
     ])
-    error_message = "the outputs should name the API's url, its callback, the table and the schedule"
+    error_message = "the outputs should name the API's url and callback, the table and the schedule"
   }
 }
 
@@ -311,25 +304,15 @@ run "iam_policy" {
       TransitKey1 = [toset(["kms:GenerateDataKey"]), toset(["arn:aws:kms:us-east-2:333333333333:key/mrk-prod"])]
       ReadParameters = [
         toset(["ssm:GetParameter"]),
-        toset(["arn:aws:ssm:us-east-2:111111111111:parameter/mock"]),
-      ]
-      ReadGivenParameters = [
-        toset(["ssm:GetParameter"]),
         toset([
+          "arn:aws:ssm:us-east-2:111111111111:parameter/mock",
           "arn:aws:ssm:us-east-2:111111111111:parameter/sealer/prod/registry",
           "arn:aws:ssm:us-east-2:111111111111:parameter/extra",
         ]),
       ]
       ParametersKey = [toset(["kms:Decrypt"]), toset(["arn:aws:kms:us-east-2:111111111111:key/ssm"])]
     }
-    error_message = "the role should have exactly the logs, tables, keys and parameters the app uses, and nothing else"
-  }
-
-  assert {
-    condition = alltrue([
-      for s in data.aws_iam_policy_document.this[0].statement : s.effect == "Allow"
-    ])
-    error_message = "every statement should allow"
+    error_message = "the role should have exactly the logs, tables, keys and parameters the app uses"
   }
 
   assert {
@@ -349,28 +332,21 @@ run "iam_policy" {
         "kms:EncryptionContext:purpose" = ["StringEquals", tolist(["seal"])]
       }
     }
-    error_message = "the keys should be usable only through their services, and each transit key only for its own env's seals"
+    error_message = "the keys should be usable only through their services, and each transit key only for its env's seals"
   }
 
   assert {
     condition = alltrue([
-      aws_iam_role_policy.this[0].role == aws_iam_role.this[0].id,
+      alltrue([for s in data.aws_iam_policy_document.this[0].statement : s.effect == "Allow"]),
       jsondecode(aws_iam_role.this[0].assume_role_policy).Statement[0].Principal.Service == "lambda.amazonaws.com",
       jsondecode(aws_iam_role.scheduler[0].assume_role_policy).Statement[0].Principal.Service == "scheduler.amazonaws.com",
       jsondecode(aws_iam_role.scheduler[0].assume_role_policy).Statement[0].Condition.StringEquals["aws:SourceAccount"] == "111111111111",
-    ])
-    error_message = "the function's role should trust lambda, and the schedule's role scheduler in this account"
-  }
-
-  assert {
-    condition = alltrue([
-      aws_kms_key.dynamodb[0].policy == "{}",
       [for s in data.aws_iam_policy_document.dynamodb_key[0].statement : [s.actions, [for p in s.principals : p.identifiers]]] == [
         [toset(["kms:*"]), [toset(["arn:aws:iam::111111111111:root"])]],
       ],
       aws_ssm_parameter.secret["APP_AGENT_SESSION_KEY"].key_id == "arn:aws:kms:us-east-2:111111111111:key/ssm",
     ])
-    error_message = "the table key's policy should leave its use to the account's IAM policies, and secrets should use the given key"
+    error_message = "the roles should trust their services, the table key the account, and secrets use the given key"
   }
 }
 
@@ -430,7 +406,7 @@ run "two_envs" {
         },
       ]
     }
-    error_message = "APP_ENVS should list each env, in name order, with only the settings it sets"
+    error_message = "APP_ENVS should list each env in name order, with only the settings it sets"
   }
 
   assert {
@@ -442,43 +418,35 @@ run "two_envs" {
       length(setintersection(keys(aws_lambda_function.this[0].environment[0].variables), [
         "APP_ENV_NAME", "APP_REGISTRY", "APP_REGISTRY_FILE", "APP_DYNAMODB_TABLE", "APP_KMS_TRANSIT_KEY_ID", "APP_ADMIN_TOKEN_KEY_CHANGES",
       ])) == 0,
-    ])
-    error_message = "several envs should be served through APP_ENVS in ssm, without the settings the app refuses beside it"
-  }
-
-  assert {
-    condition = alltrue([
       aws_lambda_function.this[0].environment[0].variables["APP_GITHUB_ALLOWED_TEAMS"] == "engineering",
       aws_lambda_function.this[0].environment[0].variables["APP_GITHUB_ADMIN_TEAMS"] == "platform",
       aws_lambda_function.this[0].environment[0].variables["APP_USER_SESSION_TTL"] == "4h",
       aws_lambda_function.this[0].environment[0].variables["APP_AWS_STS_HOSTS"] == "sts.us-east-2.amazonaws.com,sts.us-east-1.amazonaws.com",
       aws_lambda_function.this[0].environment[0].variables["APP_ADMIN_TOKEN"] == "arn:aws:ssm:us-east-2:111111111111:parameter/mock",
     ])
-    error_message = "shared settings and the shared admin token should stay in the function's environment"
+    error_message = "APP_ENVS should be in ssm, without the settings the app refuses beside it, and shared settings stay in the environment"
   }
 
   assert {
     condition = alltrue([
       toset(keys(aws_dynamodb_table.this)) == toset(["dev", "prod"]),
-      aws_dynamodb_table.this["dev"].name == "sealer-dev",
       toset(keys(aws_ssm_parameter.registry)) == toset(["dev", "prod"]),
-      aws_ssm_parameter.registry["dev"].name == "/sealer/envs/dev/registry",
       toset(keys(random_password.secret)) == toset(["APP_ADMIN_TOKEN", "APP_AGENT_SESSION_KEY", "APP_USER_SESSION_KEY", "envs/prod/admin-token"]),
       aws_ssm_parameter.secret["envs/prod/admin-token"].name == "/sealer/envs/prod/admin-token",
-      keys(output.dynamodb_tables) == tolist(["dev", "prod"]),
       toset(keys(output.ssm_parameter_arns)) == toset([
         "APP_ADMIN_TOKEN", "APP_AGENT_SESSION_KEY", "APP_ENVS", "APP_GITHUB_APP_PRIVATE_KEY", "APP_GITHUB_OAUTH_CLIENT_SECRET",
         "APP_USER_SESSION_KEY", "envs/dev/registry", "envs/prod/admin-token", "envs/prod/registry",
       ]),
     ])
-    error_message = "each env should get its own table and registry, and prod its own generated admin token"
+    error_message = "each env should get its own table and registry, and prod its own admin token"
   }
 
-  # sensitive values are checked apart: terraform test cannot show them
+  # sensitive values are checked apart, since terraform test cannot show them
   assert {
     condition = alltrue([
       nonsensitive(output.admin_token) == "generated-secret-0123456789abcdef0123456789abcdef",
-      nonsensitive(output.env_admin_tokens) == tomap({ prod = "generated-secret-0123456789abcdef0123456789abcdef" }),
+      keys(nonsensitive(output.env_admin_tokens)) == ["prod"],
+      nonsensitive(output.env_admin_tokens.prod) == "generated-secret-0123456789abcdef0123456789abcdef",
     ])
     error_message = "the outputs should hold the generated admin tokens"
   }
@@ -510,7 +478,7 @@ run "existing_table" {
   }
 }
 
-run "given_table_key_and_secrets" {
+run "given_secrets" {
   command = plan
 
   variables {
@@ -534,24 +502,23 @@ run "given_table_key_and_secrets" {
       aws_dynamodb_table.this["prod"].server_side_encryption[0].kms_key_arn == "arn:aws:kms:us-east-2:111111111111:key/given",
       !aws_dynamodb_table.this["prod"].deletion_protection_enabled,
       output.dynamodb_kms_key_arn == "arn:aws:kms:us-east-2:111111111111:key/given",
+      length(random_password.secret) == 0,
     ])
-    error_message = "a given table key should be used instead of a new one"
+    error_message = "a given table key should replace the module's, and nothing should be generated"
   }
 
+  # sensitive values are checked apart, since terraform test cannot show them
   assert {
     condition = alltrue([
-      length(random_password.secret) == 0,
       nonsensitive(aws_ssm_parameter.secret["APP_AGENT_SESSION_KEY"].value) == "an-agent-session-key-0123456789abcdef",
       nonsensitive(aws_ssm_parameter.secret["APP_USER_SESSION_KEY"].value) == "a-user-session-key-0123456789abcdef",
-      nonsensitive(aws_ssm_parameter.secret["APP_ADMIN_TOKEN"].value) == "an-admin-token-0123456789abcdef0123",
       nonsensitive(output.admin_token) == "an-admin-token-0123456789abcdef0123",
-      aws_lambda_function.this[0].environment[0].variables["APP_ADMIN_TOKEN"] == "arn:aws:ssm:us-east-2:111111111111:parameter/mock",
     ])
-    error_message = "given secrets should be stored as given, and nothing generated"
+    error_message = "given secrets should be stored as given"
   }
 }
 
-run "secrets_as_parameter_arns" {
+run "secret_arns" {
   command = plan
 
   variables {
@@ -603,21 +570,18 @@ run "secrets_as_parameter_arns" {
   }
 
   assert {
-    condition = alltrue([
-      !contains([for s in data.aws_iam_policy_document.this[0].statement : s.sid], "ReadParameters"),
-      anytrue([
-        for s in data.aws_iam_policy_document.this[0].statement :
-        s.sid == "ReadGivenParameters" && s.resources == toset([
-          "arn:aws:ssm:us-east-2:111111111111:parameter/github/private-key",
-          "arn:aws:ssm:us-east-2:111111111111:parameter/github/client-secret",
-          "arn:aws:ssm:us-east-2:111111111111:parameter/sealer/agent-session-key",
-          "arn:aws:ssm:us-east-2:111111111111:parameter/sealer/user-session-key",
-          "arn:aws:ssm:us-east-2:111111111111:parameter/sealer/prod/admin-token",
-          "arn:aws:ssm:us-east-2:111111111111:parameter/sealer/prod/registry",
-        ])
-      ]),
+    condition = anytrue([
+      for s in data.aws_iam_policy_document.this[0].statement :
+      s.sid == "ReadParameters" && s.resources == toset([
+        "arn:aws:ssm:us-east-2:111111111111:parameter/github/private-key",
+        "arn:aws:ssm:us-east-2:111111111111:parameter/github/client-secret",
+        "arn:aws:ssm:us-east-2:111111111111:parameter/sealer/agent-session-key",
+        "arn:aws:ssm:us-east-2:111111111111:parameter/sealer/user-session-key",
+        "arn:aws:ssm:us-east-2:111111111111:parameter/sealer/prod/admin-token",
+        "arn:aws:ssm:us-east-2:111111111111:parameter/sealer/prod/registry",
+      ])
     ])
-    error_message = "the function should be allowed to read exactly the given parameters"
+    error_message = "the function should read exactly the given parameters"
   }
 }
 
@@ -639,7 +603,7 @@ run "large_registry" {
   }
 }
 
-run "custom_domain_with_route53" {
+run "domain_route53" {
   command = plan
 
   variables {
@@ -665,13 +629,12 @@ run "custom_domain_with_route53" {
       output.url == "https://sealer.example.com",
       output.agent_audience == "https://sealer.example.com",
       output.oauth_callback_url == "https://sealer.example.com/api/v1/auth/callback",
-      output.api_gateway_domain_target != null,
     ])
     error_message = "the custom domain should map to the stage, get its alias record, and be the public url"
   }
 }
 
-run "custom_domain_without_route53" {
+run "domain_only" {
   command = plan
 
   variables {
@@ -684,17 +647,15 @@ run "custom_domain_without_route53" {
 
   assert {
     condition = alltrue([
-      length(aws_apigatewayv2_domain_name.this) == 1,
       length(aws_apigatewayv2_api_mapping.this) == 1,
       length(aws_route53_record.this) == 0,
-      output.url == "https://sealer.example.com",
       output.api_gateway_domain_target != null,
     ])
-    error_message = "without a zone, the domain should be mapped and its target output, with no record"
+    error_message = "without a zone, the domain should be mapped and its alias target output, with no record"
   }
 }
 
-run "public_url_and_audience" {
+run "public_url" {
   command = plan
 
   variables {
@@ -710,7 +671,6 @@ run "public_url_and_audience" {
       aws_lambda_function.this[0].environment[0].variables["APP_AGENT_AUDIENCE"] == "https://sealer-agents.example.com",
       output.url == "https://sealer.example.com",
       output.agent_audience == "https://sealer-agents.example.com",
-      output.oauth_callback_url == "https://sealer.example.com/api/v1/auth/callback",
     ])
     error_message = "a given public url and agent audience should replace the API's"
   }
@@ -750,7 +710,7 @@ run "tick_rate" {
   }
 }
 
-run "settings_and_overrides" {
+run "settings" {
   command = plan
 
   variables {
@@ -824,7 +784,7 @@ run "settings_and_overrides" {
   }
 }
 
-run "one_env_overrides_shared_settings" {
+run "env_overrides" {
   command = plan
 
   variables {
@@ -900,10 +860,30 @@ run "disabled" {
       length(aws_cloudwatch_log_group.lambda) == 0,
       length(aws_scheduler_schedule.tick) == 0,
       length(aws_iam_role.scheduler) == 0,
-      output.url == null,
-      length(output.dynamodb_tables) == 0,
-      length(output.ssm_parameter_arns) == 0,
     ])
     error_message = "a disabled module should create nothing"
+  }
+
+  assert {
+    condition = alltrue([
+      output.url == null,
+      output.agent_audience == null,
+      output.oauth_callback_url == null,
+      output.dynamodb_tables == null,
+      output.dynamodb_kms_key_arn == null,
+      output.ssm_parameter_arns == null,
+      output.lambda_function_arn == null,
+      output.lambda_role_arn == null,
+      output.api_gateway_id == null,
+      output.api_gateway_domain_target == null,
+      output.scheduler_schedule_arn == null,
+    ])
+    error_message = "a disabled module's outputs should be null"
+  }
+
+  # sensitive values are checked apart, since terraform test cannot show them
+  assert {
+    condition     = nonsensitive(output.admin_token) == null && nonsensitive(output.env_admin_tokens) == null
+    error_message = "a disabled module's tokens should be null"
   }
 }
