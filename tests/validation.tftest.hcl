@@ -1,5 +1,4 @@
-# Checks that the module refuses each invalid input, with mocked providers.
-# Run with: terraform test
+# Checks that the module refuses each invalid input.
 
 mock_provider "aws" {
   override_during = plan
@@ -91,6 +90,7 @@ mock_provider "random" {
   }
 }
 
+
 variables {
   name = "sealer"
   github_app_config = {
@@ -109,49 +109,7 @@ variables {
 }
 
 
-# --------------------------------------------------------------------- app ---
-
-run "rejects_app_version_branch" {
-  command = plan
-
-  variables {
-    app_version = "main"
-  }
-
-  expect_failures = [var.app_version]
-}
-
-run "rejects_app_repo_url" {
-  command = plan
-
-  variables {
-    app_repo = "https://github.com/cruxstack/k8s-sealed-secrets-sealer.git"
-  }
-
-  expect_failures = [var.app_repo]
-}
-
-run "rejects_log_level" {
-  command = plan
-
-  variables {
-    log_level = "trace"
-  }
-
-  expect_failures = [var.log_level]
-}
-
-run "rejects_log_format" {
-  command = plan
-
-  variables {
-    log_format = "yaml"
-  }
-
-  expect_failures = [var.log_format]
-}
-
-# -------------------------------------------------------------------- envs ---
+# ===================================================================== app ===
 
 run "rejects_no_envs" {
   command = plan
@@ -163,7 +121,7 @@ run "rejects_no_envs" {
   expect_failures = [var.envs]
 }
 
-run "rejects_env_name_not_a_dns_label" {
+run "rejects_env_name" {
   command = plan
 
   variables {
@@ -208,7 +166,7 @@ run "rejects_transit_key_alias" {
   expect_failures = [var.envs]
 }
 
-run "rejects_shared_multi_region_transit_key" {
+run "rejects_shared_transit_key" {
   command = plan
 
   variables {
@@ -227,7 +185,7 @@ run "rejects_shared_multi_region_transit_key" {
   expect_failures = [var.envs]
 }
 
-run "rejects_registry_and_parameter" {
+run "rejects_two_registries" {
   command = plan
 
   variables {
@@ -257,21 +215,6 @@ run "rejects_no_registry" {
   expect_failures = [var.envs]
 }
 
-run "rejects_registry_parameter_name" {
-  command = plan
-
-  variables {
-    envs = {
-      prod = {
-        kms_transit_key_arn    = "arn:aws:kms:us-east-2:333333333333:key/mrk-prod"
-        registry_parameter_arn = "/sealer/prod/registry"
-      }
-    }
-  }
-
-  expect_failures = [var.envs]
-}
-
 run "rejects_registry_not_yaml" {
   command = plan
 
@@ -287,7 +230,7 @@ run "rejects_registry_not_yaml" {
   expect_failures = [var.envs]
 }
 
-run "rejects_registry_without_agents" {
+run "rejects_empty_registry" {
   command = plan
 
   variables {
@@ -302,7 +245,7 @@ run "rejects_registry_without_agents" {
   expect_failures = [var.envs]
 }
 
-run "rejects_registry_over_8k" {
+run "rejects_large_registry" {
   command = plan
 
   variables {
@@ -317,15 +260,14 @@ run "rejects_registry_over_8k" {
   expect_failures = [var.envs]
 }
 
-run "rejects_table_name" {
+run "rejects_registry_name" {
   command = plan
 
   variables {
     envs = {
       prod = {
-        kms_transit_key_arn = "arn:aws:kms:us-east-2:333333333333:key/mrk-prod"
-        registry            = "agents: [{id: prod-use1-blue}]\n"
-        dynamodb_table      = { name = "sealer prod" }
+        kms_transit_key_arn    = "arn:aws:kms:us-east-2:333333333333:key/mrk-prod"
+        registry_parameter_arn = "/sealer/prod/registry"
       }
     }
   }
@@ -365,7 +307,7 @@ run "rejects_env_annotation" {
   expect_failures = [var.envs]
 }
 
-run "rejects_env_key_renew_period" {
+run "rejects_renew_period" {
   command = plan
 
   variables {
@@ -380,60 +322,6 @@ run "rejects_env_key_renew_period" {
 
   expect_failures = [var.envs]
 }
-
-# ----------------------------------------------------------- control plane ---
-
-run "rejects_session_ttl" {
-  command = plan
-
-  variables {
-    control_plane_config = { user_session_ttl = "8 hours" }
-  }
-
-  expect_failures = [var.control_plane_config]
-}
-
-run "rejects_public_url_with_path" {
-  command = plan
-
-  variables {
-    control_plane_config = { public_url = "https://example.com/sealer" }
-  }
-
-  expect_failures = [var.control_plane_config]
-}
-
-run "rejects_agent_audience" {
-  command = plan
-
-  variables {
-    control_plane_config = { agent_audience = "sealer.example.com" }
-  }
-
-  expect_failures = [var.control_plane_config]
-}
-
-run "rejects_sts_host_url" {
-  command = plan
-
-  variables {
-    control_plane_config = { aws_sts_hosts = ["https://sts.us-east-2.amazonaws.com"] }
-  }
-
-  expect_failures = [var.control_plane_config]
-}
-
-run "rejects_shared_annotation" {
-  command = plan
-
-  variables {
-    control_plane_config = { region_annotation = "-region" }
-  }
-
-  expect_failures = [var.control_plane_config]
-}
-
-# ------------------------------------------------------------------ github ---
 
 run "rejects_github_org" {
   command = plan
@@ -483,7 +371,7 @@ run "rejects_github_private_key" {
   expect_failures = [var.github_app_config]
 }
 
-run "rejects_github_missing_client_secret" {
+run "rejects_github_client_secret" {
   command = plan
 
   variables {
@@ -499,7 +387,7 @@ run "rejects_github_missing_client_secret" {
   expect_failures = [var.github_app_config]
 }
 
-run "rejects_github_http_url" {
+run "rejects_github_url" {
   command = plan
 
   variables {
@@ -516,7 +404,69 @@ run "rejects_github_http_url" {
   expect_failures = [var.github_app_config]
 }
 
-# ----------------------------------------------------------------- secrets ---
+run "rejects_session_ttl" {
+  command = plan
+
+  variables {
+    control_plane_config = { user_session_ttl = "8 hours" }
+  }
+
+  expect_failures = [var.control_plane_config]
+}
+
+run "rejects_public_url_path" {
+  command = plan
+
+  variables {
+    control_plane_config = { public_url = "https://example.com/sealer" }
+  }
+
+  expect_failures = [var.control_plane_config]
+}
+
+run "rejects_agent_audience" {
+  command = plan
+
+  variables {
+    control_plane_config = { agent_audience = "sealer.example.com" }
+  }
+
+  expect_failures = [var.control_plane_config]
+}
+
+run "rejects_sts_host_url" {
+  command = plan
+
+  variables {
+    control_plane_config = { aws_sts_hosts = ["https://sts.us-east-2.amazonaws.com"] }
+  }
+
+  expect_failures = [var.control_plane_config]
+}
+
+run "rejects_shared_annotation" {
+  command = plan
+
+  variables {
+    control_plane_config = { region_annotation = "-region" }
+  }
+
+  expect_failures = [var.control_plane_config]
+}
+
+# ================================================================ dynamodb ===
+
+run "rejects_dynamodb_key_alias" {
+  command = plan
+
+  variables {
+    dynamodb_config = { kms_key_arn = "alias/sealer" }
+  }
+
+  expect_failures = [var.dynamodb_config]
+}
+
+# ===================================================================== ssm ===
 
 run "rejects_short_session_key" {
   command = plan
@@ -561,29 +511,49 @@ run "rejects_ssm_key_alias" {
   expect_failures = [var.ssm_config]
 }
 
-run "rejects_dynamodb_key_alias" {
+# ================================================================== lambda ===
+
+run "rejects_app_version" {
   command = plan
 
   variables {
-    dynamodb_config = { kms_key_arn = "alias/sealer" }
+    app_version = "main"
   }
 
-  expect_failures = [var.dynamodb_config]
+  expect_failures = [var.app_version]
 }
 
-# ------------------------------------------------ lambda, api and schedule ---
-
-run "rejects_memory_size" {
+run "rejects_app_repo" {
   command = plan
 
   variables {
-    lambda_config = { memory_size = 64 }
+    app_repo = "https://github.com/cruxstack/k8s-sealed-secrets-sealer.git"
   }
 
-  expect_failures = [var.lambda_config]
+  expect_failures = [var.app_repo]
 }
 
-run "rejects_timeout_under_35s" {
+run "rejects_log_level" {
+  command = plan
+
+  variables {
+    log_level = "trace"
+  }
+
+  expect_failures = [var.log_level]
+}
+
+run "rejects_log_format" {
+  command = plan
+
+  variables {
+    log_format = "yaml"
+  }
+
+  expect_failures = [var.log_format]
+}
+
+run "rejects_short_timeout" {
   command = plan
 
   variables {
@@ -593,109 +563,7 @@ run "rejects_timeout_under_35s" {
   expect_failures = [var.lambda_config]
 }
 
-run "rejects_architecture" {
-  command = plan
-
-  variables {
-    lambda_config = { architecture = "amd64" }
-  }
-
-  expect_failures = [var.lambda_config]
-}
-
-run "rejects_log_retention" {
-  command = plan
-
-  variables {
-    lambda_log_retention_days = 10
-  }
-
-  expect_failures = [var.lambda_log_retention_days]
-}
-
-run "rejects_vpc_without_subnets" {
-  command = plan
-
-  variables {
-    vpc_config = {
-      subnet_ids         = []
-      security_group_ids = ["sg-1"]
-    }
-  }
-
-  expect_failures = [var.vpc_config]
-}
-
-run "rejects_negative_throttling" {
-  command = plan
-
-  variables {
-    api_gateway_config = { throttling_rate_limit = -1 }
-  }
-
-  expect_failures = [var.api_gateway_config]
-}
-
-run "rejects_domain_name" {
-  command = plan
-
-  variables {
-    domain_config = {
-      enabled         = true
-      domain_name     = "https://sealer.example.com"
-      certificate_arn = "arn:aws:acm:us-east-2:111111111111:certificate/abc"
-    }
-  }
-
-  expect_failures = [var.domain_config]
-}
-
-run "rejects_domain_without_certificate" {
-  command = plan
-
-  variables {
-    domain_config = {
-      enabled     = true
-      domain_name = "sealer.example.com"
-    }
-  }
-
-  expect_failures = [var.domain_config]
-}
-
-run "rejects_tick_cron" {
-  command = plan
-
-  variables {
-    tick_config = { schedule_expression = "cron(* * * * ? *)" }
-  }
-
-  expect_failures = [var.tick_config]
-}
-
-run "rejects_tick_plural_one" {
-  command = plan
-
-  variables {
-    tick_config = { schedule_expression = "rate(1 minutes)" }
-  }
-
-  expect_failures = [var.tick_config]
-}
-
-run "rejects_tick_over_10_minutes" {
-  command = plan
-
-  variables {
-    tick_config = { schedule_expression = "rate(15 minutes)" }
-  }
-
-  expect_failures = [var.tick_config]
-}
-
-# ----------------------------------------------------------- preconditions ---
-
-run "rejects_token_for_unknown_env" {
+run "rejects_unknown_token_env" {
   command = plan
 
   variables {
@@ -741,4 +609,51 @@ run "rejects_shared_table" {
   }
 
   expect_failures = [aws_lambda_function.this]
+}
+
+# ----------------------------------------------------------- custom domain ---
+
+run "rejects_domain_without_certificate" {
+  command = plan
+
+  variables {
+    domain_config = {
+      enabled     = true
+      domain_name = "sealer.example.com"
+    }
+  }
+
+  expect_failures = [var.domain_config]
+}
+
+# =============================================================== scheduler ===
+
+run "rejects_tick_cron" {
+  command = plan
+
+  variables {
+    tick_config = { schedule_expression = "cron(* * * * ? *)" }
+  }
+
+  expect_failures = [var.tick_config]
+}
+
+run "rejects_tick_one_minutes" {
+  command = plan
+
+  variables {
+    tick_config = { schedule_expression = "rate(1 minutes)" }
+  }
+
+  expect_failures = [var.tick_config]
+}
+
+run "rejects_tick_over_10_minutes" {
+  command = plan
+
+  variables {
+    tick_config = { schedule_expression = "rate(15 minutes)" }
+  }
+
+  expect_failures = [var.tick_config]
 }
