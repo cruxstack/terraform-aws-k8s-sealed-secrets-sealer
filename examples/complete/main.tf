@@ -21,7 +21,7 @@ module "sealer" {
   stage       = "tools"
   name        = "sealer"
 
-  app_version = "v0.10.0"
+  app_version = "v0.11.0"
 
   # two envs on one url, each with its own transit key, registry and table
   envs = {

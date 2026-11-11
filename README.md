@@ -15,6 +15,8 @@ account.
   `checksums.txt`; nothing is built from source
 - **One URL or one per env** - Serves several envs on one URL, or one env per
   deployment for isolation
+- **GitHub App setup** - The control plane creates its own GitHub App from a
+  setup page, or uses one you created by hand
 - **A table per env** - TTL, point-in-time recovery, deletion protection, and
   a customer managed KMS key
 - **Secrets in SSM** - SecureString parameters, generated when not given, or
@@ -58,12 +60,9 @@ module "sealer" {
     admin_teams = ["platform"]
   }
 
+  # the control plane creates its GitHub App from its setup page
   github_app_config = {
-    org           = "acme"
-    app_id        = "123456"
-    private_key   = var.github_app_private_key
-    client_id     = "Iv23li0123456789abcd"
-    client_secret = var.github_app_client_secret
+    org = "acme"
   }
 
   domain_config = {
@@ -75,10 +74,11 @@ module "sealer" {
 }
 ```
 
-Then set the GitHub App's callback URL to `oauth_callback_url`, allow
-`lambda_role_arn` on each env's transit key, and install the agents with
-`controlPlane.url` set to `url`. See [examples/complete](examples/complete)
-for two envs on one URL.
+Then have an owner of the org open `/setup` at `url` to create the GitHub
+App, allow `lambda_role_arn` on each env's transit key, and install the
+agents with `controlPlane.url` set to `url`. See
+[examples/complete](examples/complete) for two envs on one URL, with an App
+created by hand.
 
 ### One URL or One Deployment per Env
 
@@ -96,6 +96,28 @@ v0.6.0 or later, with `env` set, before a second env is added.
 ### GitHub App
 
 One GitHub App reads repositories, opens pull requests, and signs people in.
+Give only `org` in `github_app_config`, and the control plane creates it from
+its setup page:
+
+1. Apply the module. Until the App exists, every page redirects to `/setup`
+   and nobody can sign in; agents check in as usual.
+2. An owner of the org opens `/setup` and creates the App on GitHub, which
+   lets them rename it.
+3. The control plane checks that the org owns the App, writes its ID,
+   private key, client ID and secret to an SSM SecureString parameter, and
+   sends the owner on to install it on the repositories people seal in.
+
+The parameter is `<parameter_prefix>github-app`, `/<id>/github-app` by
+default, or your own in `parameter_arn`, in the function's account; the
+`github_app_parameter_arn` output names it. The function may read and write
+only that parameter, which is under the account's `aws/ssm` key whatever
+`ssm_config.kms_key_arn` is. It is written once, and Terraform does not
+manage it, so it outlives a destroy. To replace the App, delete it on GitHub
+and the parameter in SSM, and set it up again.
+
+To create the App by hand instead, give `app_id`, `private_key`,
+`client_id` and `client_secret`, the key and secret as values or parameter
+ARNs:
 
 - **Homepage URL:** the `url` output.
 - **Callback URL:** the `oauth_callback_url` output,
@@ -188,11 +210,11 @@ agents. See the app's
 
 ### Secrets and Backups
 
-The GitHub App's private key and client secret, the session keys, and the
-admin tokens are SecureString parameters under `/<id>/`. The function gets
-their ARNs, not their values. Set any of them to the ARN of your own
-parameter to keep it out of Terraform. The admin API is off until
-`admin_token_config` enables it.
+The session keys, the admin tokens, and a GitHub App's private key and
+client secret given as values are SecureString parameters under `/<id>/`.
+The function gets their ARNs, not their values. Set any of them to the ARN
+of your own parameter to keep it out of Terraform. The admin API is off
+until `admin_token_config` enables it.
 
 Each env's table holds its escrowed sealing keys and revocations, which
 nothing else can rebuild. Deletion protection and point-in-time recovery are
@@ -217,7 +239,9 @@ The control plane can be rebuilt in another region, such as `us-east-2` when
   regions need DynamoDB's advanced backup features turned on.
 - **Domain:** an ACM certificate for the domain in that region.
 - **Parameters:** copies there of any secret or registry given as a parameter
-  ARN, and a key there for `ssm_config.kms_key_arn` if you set it.
+  ARN, and a key there for `ssm_config.kms_key_arn` if you set it. Copy the
+  GitHub App's parameter too, and name the copy in `parameter_arn`;
+  otherwise the setup page asks for a new App.
 
 Then, in that region:
 
@@ -257,28 +281,28 @@ other optional variables (e.g., `name`, `tags`, etc.) provided by the
 `cloudposse/label/null` module. Please refer to its [documentation](https://registry.terraform.io/modules/cloudposse/label/null/latest)
 for more details on these variables.
 
-| Name                           | Description                                                                                                   | Type           | Default                                 | Required |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------- | -------------- | --------------------------------------- | -------- |
-| `envs`                         | envs to serve, by name; see [below](#envs)                                                                    | `map(object)`  | n/a                                     | yes      |
-| `github_app_config`            | `org`, `app_id`, `private_key`, `client_id`, `client_secret`, `installation_id`, `url`, `api_url` (sensitive) | `object`       | n/a                                     | yes      |
-| `control_plane_config`         | settings every env shares; see [below](#shared-settings)                                                      | `object`       | `{}`                                    | no       |
-| `dynamodb_config`              | `kms_key_arn` (default: a new key), `deletion_protection_enabled`                                             | `object`       | `{}`                                    | no       |
-| `session_keys_config`          | `agent_session_key`, `user_session_key`; generated when empty                                                 | `object`       | `{}`                                    | no       |
-| `admin_token_config`           | `enabled`, `token`, `env_tokens`; generated when empty                                                        | `object`       | `{}`                                    | no       |
-| `ssm_config`                   | `parameter_prefix` (default `/<id>/`), `kms_key_arn`                                                          | `object`       | `{}`                                    | no       |
-| `ssm_parameter_arns`           | other parameter ARNs the function may read                                                                    | `list(string)` | `[]`                                    | no       |
-| `app_version`                  | release to deploy                                                                                             | `string`       | `"v0.10.0"`                             | no       |
-| `app_repo`                     | repository of the release, for forks                                                                          | `string`       | `"cruxstack/k8s-sealed-secrets-sealer"` | no       |
-| `app_force_rebuild_id`         | change to download the release again                                                                          | `string`       | `""`                                    | no       |
-| `log_level`                    | `debug`, `info`, `warn`, or `error`                                                                           | `string`       | `"info"`                                | no       |
-| `log_format`                   | `json` or `text`                                                                                              | `string`       | `"json"`                                | no       |
-| `lambda_config`                | `memory_size` (256), `timeout` (60, at least 35), `architecture` (`arm64`), `reserved_concurrent_executions`  | `object`       | `{}`                                    | no       |
-| `lambda_log_retention_days`    | days to keep the function's and API's logs                                                                    | `number`       | `30`                                    | no       |
-| `lambda_environment_variables` | more environment variables; they override the module's                                                        | `map(string)`  | `{}`                                    | no       |
-| `vpc_config`                   | `subnet_ids`, `security_group_ids`                                                                            | `object`       | `null`                                  | no       |
-| `api_gateway_config`           | `throttling_burst_limit` (100), `throttling_rate_limit` (50)                                                  | `object`       | `{}`                                    | no       |
-| `domain_config`                | `enabled`, `domain_name`, `certificate_arn`, `route53_zone_id`                                                | `object`       | `{}`                                    | no       |
-| `tick_config`                  | `enabled` (`true`), `schedule_expression` (`rate(1 minute)` to `rate(10 minutes)`)                            | `object`       | `{}`                                    | no       |
+| Name                           | Description                                                                                                  | Type           | Default                                 | Required |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------ | -------------- | --------------------------------------- | -------- |
+| `envs`                         | envs to serve, by name; see [below](#envs)                                                                   | `map(object)`  | n/a                                     | yes      |
+| `github_app_config`            | `org`, and the App's credentials or none; see [GitHub App](#github-app) (sensitive)                          | `object`       | n/a                                     | yes      |
+| `control_plane_config`         | settings every env shares; see [below](#shared-settings)                                                     | `object`       | `{}`                                    | no       |
+| `dynamodb_config`              | `kms_key_arn` (default: a new key), `deletion_protection_enabled`                                            | `object`       | `{}`                                    | no       |
+| `session_keys_config`          | `agent_session_key`, `user_session_key`; generated when empty                                                | `object`       | `{}`                                    | no       |
+| `admin_token_config`           | `enabled`, `token`, `env_tokens`; generated when empty                                                       | `object`       | `{}`                                    | no       |
+| `ssm_config`                   | `parameter_prefix` (default `/<id>/`), `kms_key_arn`                                                         | `object`       | `{}`                                    | no       |
+| `ssm_parameter_arns`           | other parameter ARNs the function may read                                                                   | `list(string)` | `[]`                                    | no       |
+| `app_version`                  | release to deploy                                                                                            | `string`       | `"v0.11.0"`                             | no       |
+| `app_repo`                     | repository of the release, for forks                                                                         | `string`       | `"cruxstack/k8s-sealed-secrets-sealer"` | no       |
+| `app_force_rebuild_id`         | change to download the release again                                                                         | `string`       | `""`                                    | no       |
+| `log_level`                    | `debug`, `info`, `warn`, or `error`                                                                          | `string`       | `"info"`                                | no       |
+| `log_format`                   | `json` or `text`                                                                                             | `string`       | `"json"`                                | no       |
+| `lambda_config`                | `memory_size` (256), `timeout` (60, at least 35), `architecture` (`arm64`), `reserved_concurrent_executions` | `object`       | `{}`                                    | no       |
+| `lambda_log_retention_days`    | days to keep the function's and API's logs                                                                   | `number`       | `30`                                    | no       |
+| `lambda_environment_variables` | more environment variables; they override the module's                                                       | `map(string)`  | `{}`                                    | no       |
+| `vpc_config`                   | `subnet_ids`, `security_group_ids`                                                                           | `object`       | `null`                                  | no       |
+| `api_gateway_config`           | `throttling_burst_limit` (100), `throttling_rate_limit` (50)                                                 | `object`       | `{}`                                    | no       |
+| `domain_config`                | `enabled`, `domain_name`, `certificate_arn`, `route53_zone_id`                                               | `object`       | `{}`                                    | no       |
+| `tick_config`                  | `enabled` (`true`), `schedule_expression` (`rate(1 minute)` to `rate(10 minutes)`)                           | `object`       | `{}`                                    | no       |
 
 ### Envs
 
@@ -314,6 +338,7 @@ the public URL), `aws_sts_hosts`, and defaults for the env settings above.
 | `dynamodb_tables`           | each env's table name and ARN                            |
 | `dynamodb_kms_key_arn`      | ARN of the key of the tables the module creates          |
 | `ssm_parameter_arns`        | ARNs of the module's parameters, by name                 |
+| `github_app_parameter_arn`  | parameter the setup page writes the App to               |
 | `admin_token`               | shared admin token (sensitive)                           |
 | `env_admin_tokens`          | envs' own admin tokens (sensitive)                       |
 | `lambda_function_name`      | name of the Lambda function                              |

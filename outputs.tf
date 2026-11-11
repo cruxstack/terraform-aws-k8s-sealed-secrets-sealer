@@ -23,6 +23,11 @@ output "ssm_parameter_arns" {
   ) : null
 }
 
+output "github_app_parameter_arn" {
+  description = "ARN of the parameter the setup page writes the GitHub App's credentials to, when they are not given"
+  value       = local.enabled ? local.github_app_parameter_arn : null
+}
+
 output "admin_token" {
   description = "Shared admin API token, unless given as a parameter ARN"
   value       = try(aws_ssm_parameter.secret["APP_ADMIN_TOKEN"].value, null)
