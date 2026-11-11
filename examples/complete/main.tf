@@ -16,40 +16,32 @@ provider "aws" {
 module "sealer" {
   source = "../../"
 
-  # naming context
   namespace   = "eg"
   environment = "ue2"
   stage       = "tools"
   name        = "sealer"
 
-  # k8s-sealed-secrets-sealer release to deploy
   app_version = "v0.10.0"
 
-  # two envs on one url; each has its own transit key (in the env's account),
-  # agent registry and table
+  # two envs on one url, each with its own transit key, registry and table
   envs = {
     dev = {
       kms_transit_key_arn = var.dev_transit_key_arn
       registry = yamlencode({
         issuers = []
-        agents = [
-          {
-            id           = "dev-use1-blue"
-            cluster      = "dev-use1-blue"
-            region       = "use1"
-            capabilities = ["seal", "keys", "renewal", "cleanup", "reseal"]
-            identity     = { aws = { roleArn = "arn:aws:iam::222222222222:role/sealer-agent-dev-use1-blue" } }
-          },
-        ]
+        agents = [{
+          id           = "dev-use1-blue"
+          cluster      = "dev-use1-blue"
+          region       = "use1"
+          capabilities = ["seal", "keys", "renewal", "cleanup", "reseal"]
+          identity     = { aws = { roleArn = "arn:aws:iam::222222222222:role/sealer-agent-dev-use1-blue" } }
+        }]
       })
     }
     prod = {
-      kms_transit_key_arn = var.prod_transit_key_arn
-      # or keep the registry in a parameter you manage
-      registry_parameter_arn = var.prod_registry_parameter_arn
-      # only prod-sealers may use prod; platform administers every env
-      allowed_teams = ["prod-sealers"]
-      # prod's own admin token may revoke, reinstate and delete keys
+      kms_transit_key_arn     = var.prod_transit_key_arn
+      registry_parameter_arn  = var.prod_registry_parameter_arn
+      allowed_teams           = ["prod-sealers"]
       admin_token_key_changes = true
     }
   }
@@ -58,7 +50,6 @@ module "sealer" {
     admin_teams = ["platform"]
   }
 
-  # one github app reads repositories, opens pull requests and signs people in
   github_app_config = {
     org           = var.github_org
     app_id        = var.github_app_id
@@ -67,8 +58,7 @@ module "sealer" {
     client_secret = var.github_app_client_secret
   }
 
-  # a shared token that reads every env's fleet, for monitoring, and prod's
-  # own; both are generated
+  # a shared read-only token for monitoring, and prod's own, both generated
   admin_token_config = {
     enabled    = true
     env_tokens = { prod = "" }
@@ -80,28 +70,23 @@ module "sealer" {
     certificate_arn = var.certificate_arn
     route53_zone_id = var.route53_zone_id
   }
-
-  lambda_config = {
-    architecture = "arm64"
-    timeout      = 60
-  }
 }
 
 # ---------------------------------------------------------------- variables ---
 
 variable "dev_transit_key_arn" {
   type        = string
-  description = "ARN of the dev env's transit key, in the dev account"
+  description = "Dev transit key ARN, in the dev account"
 }
 
 variable "prod_transit_key_arn" {
   type        = string
-  description = "ARN of the prod env's transit key, in the prod account"
+  description = "Prod transit key ARN, in the prod account"
 }
 
 variable "prod_registry_parameter_arn" {
   type        = string
-  description = "ARN of the SSM parameter holding the prod env's agent registry"
+  description = "SSM parameter holding the prod env's registry"
 }
 
 variable "github_org" {
@@ -133,33 +118,33 @@ variable "github_app_client_secret" {
 
 variable "domain_name" {
   type        = string
-  description = "Domain people and agents reach the control plane at, such as sealer.example.com"
+  description = "Domain of the control plane, such as sealer.example.com"
 }
 
 variable "certificate_arn" {
   type        = string
-  description = "ARN of an ACM certificate for the domain, in this region"
+  description = "ACM certificate for the domain, in this region"
 }
 
 variable "route53_zone_id" {
   type        = string
-  description = "Route 53 zone to create the domain's record in"
+  description = "Route 53 zone for the domain's record"
 }
 
 # ------------------------------------------------------------------ outputs ---
 
 output "url" {
-  description = "URL of the control plane, for people and the agents' controlPlane.url"
+  description = "URL of the control plane"
   value       = module.sealer.url
 }
 
 output "oauth_callback_url" {
-  description = "Callback URL to set in the GitHub App's settings"
+  description = "Callback URL for the GitHub App"
   value       = module.sealer.oauth_callback_url
 }
 
 output "lambda_role_arn" {
-  description = "Role each env's transit key policy allows kms:GenerateDataKey"
+  description = "Role to allow on each env's transit key"
   value       = module.sealer.lambda_role_arn
 }
 
@@ -170,7 +155,7 @@ output "admin_token" {
 }
 
 output "env_admin_tokens" {
-  description = "Admin API tokens of the envs with their own"
+  description = "Envs' own admin API tokens"
   value       = module.sealer.env_admin_tokens
   sensitive   = true
 }
