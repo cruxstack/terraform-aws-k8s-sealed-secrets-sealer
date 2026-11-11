@@ -611,6 +611,45 @@ run "rejects_shared_table" {
   expect_failures = [aws_lambda_function.this]
 }
 
+run "rejects_restored_table_key_in_other_region" {
+  command = plan
+
+  variables {
+    envs = {
+      prod = {
+        kms_transit_key_arn = "arn:aws:kms:us-east-2:333333333333:key/mrk-prod"
+        registry            = "agents: [{id: prod-use1-blue}]\n"
+        dynamodb_table = {
+          name        = "sealer-prod-restored"
+          kms_key_arn = "arn:aws:kms:us-east-1:111111111111:key/restored"
+        }
+      }
+    }
+  }
+
+  expect_failures = [aws_lambda_function.this]
+}
+
+run "rejects_table_key_in_other_region" {
+  command = plan
+
+  variables {
+    dynamodb_config = { kms_key_arn = "arn:aws:kms:us-east-1:111111111111:key/tables" }
+  }
+
+  expect_failures = [aws_lambda_function.this]
+}
+
+run "rejects_ssm_key_in_other_region" {
+  command = plan
+
+  variables {
+    ssm_config = { kms_key_arn = "arn:aws:kms:us-east-1:111111111111:key/ssm" }
+  }
+
+  expect_failures = [aws_lambda_function.this]
+}
+
 # ----------------------------------------------------------- custom domain ---
 
 run "rejects_domain_without_certificate" {

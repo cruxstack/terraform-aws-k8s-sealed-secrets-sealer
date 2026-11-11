@@ -31,6 +31,12 @@ locals {
 
   create_table_key  = local.enabled && length(local.created_tables) > 0 && var.dynamodb_config.kms_key_arn == ""
   table_kms_key_arn = var.dynamodb_config.kms_key_arn != "" ? var.dynamodb_config.kms_key_arn : one(aws_kms_key.dynamodb[*].arn)
+
+  # the keys given for the tables in use, which must be in the tables' region
+  given_table_kms_key_arns = compact(concat(
+    length(local.created_tables) > 0 ? [var.dynamodb_config.kms_key_arn] : [],
+    [for env in var.envs : try(env.dynamodb_table.kms_key_arn, "")],
+  ))
 }
 
 resource "aws_dynamodb_table" "this" {
@@ -312,6 +318,17 @@ resource "aws_lambda_function" "this" {
     precondition {
       condition     = length(distinct(values(local.table_names))) == length(local.table_names)
       error_message = "Each env needs its own DynamoDB table."
+    }
+
+    # a table restored from another region's backup needs a key in this one
+    precondition {
+      condition     = alltrue([for arn in local.given_table_kms_key_arns : split(":", arn)[3] == local.aws_region_name])
+      error_message = "The tables' KMS keys must be in ${local.aws_region_name}, where the tables are."
+    }
+
+    precondition {
+      condition     = var.ssm_config.kms_key_arn == "" || split(":", var.ssm_config.kms_key_arn)[3] == local.aws_region_name
+      error_message = "ssm_config.kms_key_arn must be a key in ${local.aws_region_name}, where the parameters are."
     }
   }
 
